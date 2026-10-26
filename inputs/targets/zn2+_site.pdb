@@ -1,0 +1,15 @@
+REMARK   Site de coordination Zn2+ modele pour OptoBind-AI
+REMARK   Coordination tetraedrique ideale a pH 7.4 (2 His, 2 Cys)
+ATOM      1  N   HIS A   1       0.000   0.000   0.000  1.00 20.00           N  
+ATOM      2  CA  HIS A   1       1.450   0.000   0.000  1.00 20.00           C  
+ATOM      3  C   HIS A   1       2.000   1.400   0.000  1.00 20.00           C  
+ATOM      4  O   HIS A   1       1.300   2.400   0.000  1.00 20.00           O  
+ATOM      5  CB  HIS A   1       1.950  -0.750  -1.250  1.00 20.00           C  
+ATOM      6  CG  HIS A   1       1.500  -2.150  -1.350  1.00 20.00           C  
+ATOM      7  ND1 HIS A   1       0.200  -2.550  -1.550  1.00 20.00           N  
+ATOM      8  CD2 HIS A   1       2.250  -3.250  -1.200  1.00 20.00           C  
+ATOM      9  CE1 HIS A   1       0.200  -3.850  -1.550  1.00 20.00           C  
+ATOM     10  NE2 HIS A   1       1.400  -4.300  -1.350  1.00 20.00           N  
+HETATM   11 ZN    ZN A 100       1.850  -6.250  -1.350  1.00 20.00          ZN  
+TER
+END

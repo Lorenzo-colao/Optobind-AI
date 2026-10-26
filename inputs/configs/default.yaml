@@ -1,0 +1,66 @@
+# Fichier de configuration par défaut — OptoBind-AI
+# Copier ce fichier et adapter les valeurs pour chaque expérience.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fichiers d'entrée (Target & Ligand)
+# ─────────────────────────────────────────────────────────────────────────────
+inputs:
+  target      : "inputs/targets/zn2+_site.pdb"   # Cible (ex: ion Zn²⁺ ou poche)
+  ligand      : "inputs/ligands/DFHBI-1T.sdf"    # Fluorophore (ex: DFHBI-1T)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paramètres globaux de design
+# ─────────────────────────────────────────────────────────────────────────────
+design:
+  n_variants  : 5         # Nombre de variants à générer (1–50)
+  min_length  : 70        # Longueur minimale du squelette (en AA)
+  max_length  : 100       # Longueur maximale du squelette (en AA)
+  pH          : 7.4       # pH cible (impact sur protonation des His)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module 1 — RFdiffusion All-Atom
+# ─────────────────────────────────────────────────────────────────────────────
+rfdiffusion:
+  model_weights     : "weights/RFDiffusionAA_paper_weights.pt"
+  num_steps         : 200          # Nombre de pas de diffusion (200 recommandé)
+  noise_scale_ca    : 1.0
+  noise_scale_frame : 1.0
+  # Contigs : format RFdiffusion — segments fixes / hallucines
+  # "A1-5/0 70-100" = fixer résidus A1-A5, halluciner 70-100 AA
+  contigs           : "A1-5/0 70-100"
+  # Résidus chauds (hotspots) imposant la poche de liaison (ex: A12+A34)
+  hotspot_residues  : []
+  use_cuda          : true
+  seed              : 42
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module 2 — ProteinMPNN
+# ─────────────────────────────────────────────────────────────────────────────
+proteinmpnn:
+  model_weights     : "weights/ProteinMPNN_v_48_020.pt"
+  # Température d'échantillonnage : 0.1 (conservateur) à 0.5 (diversité)
+  sampling_temp     : 0.1
+  num_seq_per_target: 8            # Séquences générées par squelette
+  backbone_noise    : 0.00         # Bruit ajouté au squelette (Å)
+  use_cuda          : true
+  seed              : 42
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module 3 — Validation structurale
+# ─────────────────────────────────────────────────────────────────────────────
+alphafold:
+  # backend : "chai-1" | "esmfold" | "alphafold3"
+  backend           : "chai-1"
+  model_dir         : "weights/chai-1/"
+  num_trunk_recycles: 3
+  num_diffn_samples : 5
+  use_esm_embeddings: true
+  use_cuda          : true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Critères de validation in silico
+# ─────────────────────────────────────────────────────────────────────────────
+validation:
+  rmsd_threshold    : 2.0    # Seuil RMSD Cα (Å) — doit être < ce seuil
+  plddt_threshold   : 90.0   # pLDDT moyen requis (sur 100)
+  clash_vdw_cutoff  : 0.6    # Fraction du rayon VdW pour détecter un clash

@@ -1,0 +1,42 @@
+name: optobind-ai
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # ── Python & CUDA ───────────────────────────────────────────────────────────
+  - python=3.10
+  - cuda-toolkit=11.8         # ou 12.1 selon votre driver NVIDIA
+  - pytorch>=2.1.0
+  - pytorch-cuda=11.8
+
+  # ── Bio-informatique structurale ─────────────────────────────────────────────
+  - biopython>=1.81
+  - numpy>=1.24
+  - scipy>=1.11
+
+  # ── Chimie computationnelle ──────────────────────────────────────────────────
+  - rdkit>=2023.09            # SDF → SMILES, préparation des ligands
+
+  # ── Pipeline et configuration ────────────────────────────────────────────────
+  - pyyaml>=6.0
+  - click>=8.1                # optionnel, pour de futurs CLI étendus
+
+  # ── Tests et développement ───────────────────────────────────────────────────
+  - pytest>=7.4
+  - pytest-cov>=4.1
+
+  # ── Packages pip (non disponibles sur conda) ──────────────────────────────────
+  - pip:
+    # RFdiffusion All-Atom — installation depuis GitHub
+    - git+https://github.com/RosettaCommons/RFdiffusion.git
+    # Chai-1 (alternative locale rapide à AlphaFold 3)
+    - chai-lab>=0.3.0
+    # ESMFold (Meta) — backend alternatif
+    - fair-esm>=2.0.0
+    # Visualisation et analyse
+    - matplotlib>=3.8
+    - pandas>=2.1
+    - tqdm>=4.66
