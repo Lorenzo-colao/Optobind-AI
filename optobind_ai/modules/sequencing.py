@@ -170,6 +170,11 @@ def _invoke_proteinmpnn(
         "--seed",                str(seed),
     ]
 
+    import torch
+    if use_cuda and not torch.cuda.is_available():
+        logger.warning("  [DEVICE] CUDA demandé pour ProteinMPNN mais absent. Bascule automatique sur CPU.")
+        use_cuda = False
+
     if model_weights:
         cmd += ["--checkpoint_path", model_weights]
     if not use_cuda:

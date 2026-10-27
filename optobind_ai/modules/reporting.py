@@ -135,6 +135,21 @@ def print_summary(
     """
     Affiche un tableau récapitulatif coloré en console.
     """
+    import sys as _sys
+    # Sur Windows, assurer l'encodage UTF-8 pour les caractères spéciaux (═─✓✗)
+    if _sys.platform == "win32":
+        try:
+            import io
+            _out = io.TextIOWrapper(_sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+        except AttributeError:
+            _out = _sys.stdout
+    else:
+        _out = _sys.stdout
+
+    def _print(*args, **kwargs):
+        kwargs.setdefault("file", _out)
+        print(*args, **kwargs)
+
     GREEN  = "\033[92m"
     RED    = "\033[91m"
     YELLOW = "\033[93m"
@@ -145,37 +160,37 @@ def print_summary(
     n_fail = len(validation_results) - n_pass
     n_no_val = len(sequences) - len(validation_results)
 
-    sep = "─" * 72
+    sep = "-" * 72
 
-    print(f"\n{BOLD}{'═' * 72}{RESET}")
-    print(f"{BOLD}  RÉSUMÉ OptoBind-AI{RESET}")
-    print(f"{sep}")
-    print(f"  Squelettes générés  : {len(scaffolds)}")
-    print(f"  Séquences optimisées: {len(sequences)}")
-    print(f"  Variants validés    : {GREEN}{n_pass} PASS{RESET}  /  {RED}{n_fail} FAIL{RESET}"
-          + (f"  /  {YELLOW}{n_no_val} non validés{RESET}" if n_no_val else ""))
-    print(f"  Seuils appliqués    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} Å")
-    print(f"{sep}")
+    _print(f"\n{BOLD}{'=' * 72}{RESET}")
+    _print(f"{BOLD}  RESUME OptoBind-AI{RESET}")
+    _print(f"{sep}")
+    _print(f"  Squelettes generes  : {len(scaffolds)}")
+    _print(f"  Sequences optimisees: {len(sequences)}")
+    _print(f"  Variants valides    : {GREEN}{n_pass} PASS{RESET}  /  {RED}{n_fail} FAIL{RESET}"
+           + (f"  /  {YELLOW}{n_no_val} non valides{RESET}" if n_no_val else ""))
+    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A")
+    _print(f"{sep}")
 
     if validation_results:
         header = (
-            f"  {'Variant':<35} {'pLDDT':>7} {'RMSD(Å)':>8} "
+            f"  {'Variant':<35} {'pLDDT':>7} {'RMSD(A)':>8} "
             f"{'Clashes':>8} {'Status':>7}"
         )
-        print(header)
-        print(f"  {sep[2:]}")
+        _print(header)
+        _print(f"  {sep[2:]}")
         for v in validation_results:
             color  = GREEN if v.passed else RED
-            status = "PASS ✓" if v.passed else "FAIL ✗"
-            print(
+            status = "PASS OK" if v.passed else "FAIL  X"
+            _print(
                 f"  {v.sequence.name:<35} {v.plddt_mean:>7.2f} "
                 f"{v.rmsd:>8.3f} {v.n_clashes:>8d} "
                 f"{color}{status:>7}{RESET}"
             )
     else:
-        print(f"  {YELLOW}Aucune validation effectuée (--skip-validation){RESET}")
+        _print(f"  {YELLOW}Aucune validation effectuee (--skip-validation){RESET}")
 
-    print(f"{sep}")
-    print(f"  Rapport CSV   : {report_path}")
-    print(f"  Rapport Excel : {report_path.with_suffix('.xlsx')}")
-    print(f"{'═' * 72}{RESET}\n")
+    _print(f"{sep}")
+    _print(f"  Rapport CSV   : {report_path}")
+    _print(f"  Rapport Excel : {report_path.with_suffix('.xlsx')}")
+    _print(f"{'=' * 72}{RESET}\n")

@@ -72,7 +72,21 @@ def setup_logger(
         logger.handlers.clear()
 
     # ── Handler console ───────────────────────────────────────────────────────
-    ch = logging.StreamHandler(sys.stdout)
+    # Sur Windows (cp1252), forcer l'encodage UTF-8 pour éviter les UnicodeEncodeError
+    # liés aux caractères spéciaux (┌─ ▸ ✓ ✗ etc.)
+    import sys as _sys
+    console_stream = _sys.stdout
+    if _sys.platform == "win32":
+        try:
+            import io
+            console_stream = io.TextIOWrapper(
+                _sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
+            )
+        except AttributeError:
+            # Si stdout n'a pas de .buffer (ex: dans un IDE), on continue sans wrapper
+            pass
+
+    ch = logging.StreamHandler(console_stream)
     ch.setLevel(logging.DEBUG if verbose else logging.INFO)
     ch.setFormatter(_ColorFormatter())
     logger.addHandler(ch)

@@ -30,9 +30,44 @@ for _attr in ("Mapping", "Iterable", "Sequence", "MutableMapping", "Callable"):
 
 import argparse
 import logging
+import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
+
+# Sur Windows, redirection transparente vers l'environnement WSL2 Ubuntu
+# qui contient PyTorch, DGL et toutes les dépendances GPU/Linux du pipeline.
+# La redirection se fait TOUJOURS sur Windows sauf si on est déjà dans WSL2.
+if sys.platform == "win32" and "--wsl-passthrough" not in sys.argv:
+    if shutil.which("wsl"):
+        cur_dir = str(Path.cwd().resolve())
+        drive = cur_dir[0].lower()
+        subpath = cur_dir[2:].replace("\\", "/")
+        wsl_dir = f"/mnt/{drive}{subpath}"
+        check_env = subprocess.run(
+            ["wsl", "-d", "Ubuntu", "-e", "bash", "-c",
+             "[ -f /home/colao/miniconda3/envs/optobind-ai/bin/python ] && echo ok"],
+            capture_output=True, text=True,
+        )
+        if "ok" in check_env.stdout:
+            # Construire les arguments CLI sans interpréter de chemins Windows
+            safe_args = [a.replace("\\", "/") for a in sys.argv[1:]]
+            cli_args = " ".join(f'"{a}"' for a in safe_args)
+            print("[OptoBind-AI] Redirection vers WSL2 Ubuntu (env: optobind-ai)...")
+            cmd = [
+                "wsl", "-d", "Ubuntu", "-e", "bash", "-c",
+                f"cd '{wsl_dir}' && PYTHONIOENCODING=utf-8 "
+                f"/home/colao/miniconda3/envs/optobind-ai/bin/python orchestrator.py {cli_args}"
+            ]
+            ret = subprocess.run(cmd)
+            sys.exit(ret.returncode)
+        else:
+            print("[AVERTISSEMENT] Environnement WSL2 optobind-ai introuvable. "
+                  "Execution locale (modules GPU desactives).")
+    else:
+        print("[AVERTISSEMENT] WSL2 non detecte. Execution locale.")
 
 from optobind_ai.utils.config     import load_config, validate_config
 from optobind_ai.utils.logger     import setup_logger

@@ -212,6 +212,12 @@ def _invoke_rfdiffusion(
         hs_str = "+".join(hotspots)
         cmd.append(f"ppi.hotspot_res=[{hs_str}]")
 
+    # Détection automatique de CUDA pour basculer sur CPU si aucun GPU n'est présent
+    import torch
+    if use_cuda and not torch.cuda.is_available():
+        logger.warning("  [DEVICE] CUDA demandé mais aucun GPU NVIDIA disponible. Bascule automatique sur CPU.")
+        use_cuda = False
+
     if not use_cuda:
         cmd.extend(["inference.model_runner.device=cpu"])
 
