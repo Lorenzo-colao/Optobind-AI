@@ -126,6 +126,28 @@ def _build_contigs(cfg: dict[str, Any], backbone_len: tuple[int, int]) -> str:
     return f"A1-5/0 {lo}-{hi}"
 
 
+def _find_or_clone_rfdiffusion(logger: logging.Logger) -> tuple[Path, Path]:
+    """Trouve ou clone automatiquement RFdiffusion et retourne (run_inference.py, schedules_dir)."""
+    candidates = [
+        Path("RFdiffusion/scripts/run_inference.py"),
+        Path(__file__).resolve().parent.parent.parent / "RFdiffusion" / "scripts" / "run_inference.py",
+        Path("/content/Optobind-AI/RFdiffusion/scripts/run_inference.py"),
+        Path("/content/RFdiffusion/scripts/run_inference.py"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p.resolve(), (p.parent.parent / "schedules").resolve()
+
+    logger.info("  [AUTO-SETUP] Clonage automatique de RFdiffusion...")
+    import subprocess as _sp
+    _sp.run(["git", "clone", "https://github.com/RosettaCommons/RFdiffusion.git"], check=False)
+    for p in candidates:
+        if p.exists():
+            return p.resolve(), (p.parent.parent / "schedules").resolve()
+
+    return Path("RFdiffusion/scripts/run_inference.py"), Path("RFdiffusion/schedules")
+
+
 def _invoke_rfdiffusion(
     target_pdb    : Path,
     ligand_file   : Path,
@@ -142,12 +164,14 @@ def _invoke_rfdiffusion(
 ) -> list[Scaffold]:
     """Lance RFdiffusion All-Atom via subprocess."""
 
+    inference_script, schedules_dir = _find_or_clone_rfdiffusion(logger)
+
     # Préfixe de sortie
     output_prefix = str(output_dir / f"{run_id}_scaffold")
 
     # Construction de la commande CLI de RFdiffusion All-Atom
     cmd = [
-        "python", "RFdiffusion/scripts/run_inference.py",
+        "python", str(inference_script),
         f"inference.input_pdb={target_pdb}",
         f"inference.output_prefix={output_prefix}",
         f"inference.num_designs={n_variants}",
@@ -155,7 +179,7 @@ def _invoke_rfdiffusion(
         f"contigmap.contigs=[{contigs}]",
         f"inference.ckpt_override_path={model_weights}",
         f"inference.ligand={ligand_file}",
-        "inference.schedule_directory_path=RFdiffusion/schedules",
+        f"inference.schedule_directory_path={schedules_dir}",
     ]
 
     if hotspots:

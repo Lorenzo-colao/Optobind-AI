@@ -108,6 +108,30 @@ def run_proteinmpnn(
 # Invocation ProteinMPNN
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _find_or_clone_proteinmpnn(logger: logging.Logger) -> tuple[Path, Path]:
+    """Trouve ou clone automatiquement ProteinMPNN et retourne (protein_mpnn_run.py, parse_chains.py)."""
+    candidates = [
+        Path("ProteinMPNN/protein_mpnn_run.py"),
+        Path(__file__).resolve().parent.parent.parent / "ProteinMPNN" / "protein_mpnn_run.py",
+        Path("/content/Optobind-AI/ProteinMPNN/protein_mpnn_run.py"),
+        Path("/content/ProteinMPNN/protein_mpnn_run.py"),
+    ]
+    for p in candidates:
+        if p.exists():
+            parse_script = p.parent / "helper_scripts" / "parse_multiple_chains.py"
+            return p.resolve(), parse_script.resolve()
+
+    logger.info("  [AUTO-SETUP] Clonage automatique de ProteinMPNN...")
+    import subprocess as _sp
+    _sp.run(["git", "clone", "https://github.com/dauparas/ProteinMPNN.git"], check=False)
+    for p in candidates:
+        if p.exists():
+            parse_script = p.parent / "helper_scripts" / "parse_multiple_chains.py"
+            return p.resolve(), parse_script.resolve()
+
+    return Path("ProteinMPNN/protein_mpnn_run.py"), Path("ProteinMPNN/helper_scripts/parse_multiple_chains.py")
+
+
 def _invoke_proteinmpnn(
     scaffold       : Scaffold,
     output_dir     : Path,
@@ -121,17 +145,19 @@ def _invoke_proteinmpnn(
 ) -> list[DesignedSequence]:
     """Lance ProteinMPNN via subprocess et parse les FASTA de sortie."""
 
+    mpnn_script, parse_script = _find_or_clone_proteinmpnn(logger)
+
     # Répertoire temporaire pour ce scaffold
     tmp_dir = output_dir / scaffold.name
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     # Parsing de structure (pdb → json via helper_scripts)
     parsed_json = tmp_dir / "parsed_pdbs.json"
-    _parse_pdbs(scaffold.pdb_path, parsed_json, logger)
+    _parse_pdbs(scaffold.pdb_path, parsed_json, parse_script, logger)
 
     # Commande principale ProteinMPNN
     cmd = [
-        "python", "ProteinMPNN/protein_mpnn_run.py",
+        "python", str(mpnn_script),
         "--jsonl_path",          str(parsed_json),
         "--out_folder",          str(tmp_dir),
         "--num_seq_per_target",  str(num_seq),
@@ -162,13 +188,13 @@ def _invoke_proteinmpnn(
     return _collect_sequences(scaffold, tmp_dir, num_seq, output_dir)
 
 
-def _parse_pdbs(pdb_path: Path, out_json: Path, logger: logging.Logger) -> None:
+def _parse_pdbs(pdb_path: Path, out_json: Path, parse_script: Path, logger: logging.Logger) -> None:
     """
     Appelle le helper ProteinMPNN ``parse_multiple_chains.py``
     pour convertir le PDB en JSON.
     """
     cmd = [
-        "python", "ProteinMPNN/helper_scripts/parse_multiple_chains.py",
+        "python", str(parse_script),
         "--input_path",  str(pdb_path.parent),
         "--output_path", str(out_json),
     ]
