@@ -128,25 +128,29 @@ def _build_contigs(cfg: dict[str, Any], backbone_len: tuple[int, int]) -> str:
 
 
 def _find_or_clone_rfdiffusion(logger: logging.Logger) -> tuple[Path, Path]:
-    """Trouve ou clone automatiquement RFdiffusion et retourne (run_inference.py, schedules_dir)."""
+    """Trouve ou clone automatiquement RFdiffusion All-Atom et retourne (run_inference.py, rfdiff_root)."""
     candidates = [
+        Path("RFdiffusion/run_inference.py"),
         Path("RFdiffusion/scripts/run_inference.py"),
+        Path(__file__).resolve().parent.parent.parent / "RFdiffusion" / "run_inference.py",
         Path(__file__).resolve().parent.parent.parent / "RFdiffusion" / "scripts" / "run_inference.py",
-        Path("/content/Optobind-AI/RFdiffusion/scripts/run_inference.py"),
-        Path("/content/RFdiffusion/scripts/run_inference.py"),
+        Path("/content/Optobind-AI/RFdiffusion/run_inference.py"),
+        Path("/content/RFdiffusion/run_inference.py"),
     ]
     for p in candidates:
         if p.exists():
-            return p.resolve(), (p.parent.parent / "schedules").resolve()
+            rfdiff_root = p.parent if (p.parent / "config").exists() else (p.parent.parent if (p.parent.parent / "config").exists() else p.parent)
+            return p.resolve(), rfdiff_root.resolve()
 
-    logger.info("  [AUTO-SETUP] Clonage automatique de RFdiffusion...")
+    logger.info("  [AUTO-SETUP] Clonage automatique de RFdiffusion All-Atom...")
     import subprocess as _sp
-    _sp.run(["git", "clone", "https://github.com/RosettaCommons/RFdiffusion.git"], check=False)
+    _sp.run(["git", "clone", "--recurse-submodules", "https://github.com/baker-laboratory/rf_diffusion_all_atom.git", "RFdiffusion"], check=False)
     for p in candidates:
         if p.exists():
-            return p.resolve(), (p.parent.parent / "schedules").resolve()
+            rfdiff_root = p.parent if (p.parent / "config").exists() else (p.parent.parent if (p.parent.parent / "config").exists() else p.parent)
+            return p.resolve(), rfdiff_root.resolve()
 
-    return Path("RFdiffusion/scripts/run_inference.py"), Path("RFdiffusion/schedules")
+    return Path("RFdiffusion/run_inference.py"), Path("RFdiffusion")
 
 
 def _patch_se3_pooling() -> None:
@@ -171,6 +175,22 @@ def _patch_se3_pooling() -> None:
                 pass
 
 
+def _detect_ligand_name(pdb_path: Path, ligand_file: Path) -> str:
+    """Détecte le code résidu du ligand (ex: ZN) présent dans le PDB cible ou son fichier."""
+    if pdb_path.exists():
+        try:
+            with open(pdb_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if line.startswith("HETATM"):
+                        res_name = line[17:20].strip()
+                        if res_name:
+                            return res_name
+        except Exception:
+            pass
+    stem = ligand_file.stem.split("-")[0].split("_")[0]
+    return stem[:3].upper() if len(stem) >= 3 else stem
+
+
 def _invoke_rfdiffusion(
     target_pdb    : Path,
     ligand_file   : Path,
@@ -187,57 +207,61 @@ def _invoke_rfdiffusion(
 ) -> list[Scaffold]:
     """Lance RFdiffusion All-Atom via subprocess."""
 
-    inference_script, schedules_dir = _find_or_clone_rfdiffusion(logger)
+    inference_script, rfdiff_root = _find_or_clone_rfdiffusion(logger)
     _patch_se3_pooling()
 
     # Préfixe de sortie
     output_prefix = str(output_dir / f"{run_id}_scaffold")
 
-    runner_script = (Path(__file__).resolve().parent.parent / "utils" / "runner.py").resolve()
+    # ── Résolution des chemins sans espaces pour Hydra ───────────────────────
+    import os
 
-    # Construction de la commande CLI de RFdiffusion All-Atom via le runner de compatibilité
+    def _safe_path(p: Path) -> str:
+        p = p.resolve()
+        s = str(p)
+        if " " not in s:
+            return s
+        link_name = "/tmp/optobind_" + p.name.replace(" ", "_")
+        try:
+            lp = Path(link_name)
+            if lp.exists() or lp.is_symlink():
+                lp.unlink()
+            lp.symlink_to(p)
+            return link_name
+        except Exception:
+            return s
+
+    safe_target     = _safe_path(target_pdb)
+    safe_prefix     = _safe_path(output_dir / f"{run_id}_scaffold")
+    safe_weights    = _safe_path(Path(model_weights))
+
+    # Commande native pour rf_diffusion_all_atom
     cmd = [
-        sys.executable, str(runner_script), str(inference_script),
-        f"inference.input_pdb={target_pdb}",
-        f"inference.output_prefix={output_prefix}",
+        sys.executable, str(inference_script),
+        f"inference.input_pdb={safe_target}",
+        f"inference.output_prefix={safe_prefix}",
         f"inference.num_designs={n_variants}",
         f"diffuser.T={num_steps}",
         f"contigmap.contigs=[{contigs}]",
-        f"inference.ckpt_override_path={model_weights}",
-        f"inference.ligand={ligand_file}",
-        f"inference.schedule_directory_path={schedules_dir}",
+        f"inference.ckpt_path={safe_weights}",
+        "inference.deterministic=True",
     ]
+
+    lig_code = _detect_ligand_name(target_pdb, ligand_file)
+    if lig_code:
+        cmd.append(f"inference.ligand={lig_code}")
 
     if hotspots:
         hs_str = "+".join(hotspots)
         cmd.append(f"ppi.hotspot_res=[{hs_str}]")
 
-    # Détection automatique de CUDA pour basculer sur CPU si aucun GPU n'est présent
-    import torch
-    if use_cuda and not torch.cuda.is_available():
-        logger.warning("  [DEVICE] CUDA demandé mais aucun GPU NVIDIA disponible. Bascule automatique sur CPU.")
-        use_cuda = False
-
-    if not use_cuda:
-        cmd.extend(["inference.model_runner.device=cpu"])
-
-    # Ajout du seed de reproductibilité
-    cmd.append(f"inference.seed={seed}")
-
     logger.debug("  [CMD] %s", " ".join(cmd))
 
-    # Injection du patch de compatibilité et des chemins dans PYTHONPATH
-    import os
+    # Injection du PYTHONPATH avec la racine du dépôt All-Atom et son sous-module rf2aa
     env = os.environ.copy()
-    compat_script = Path(__file__).parent.parent / "utils" / "compat.py"
-    if compat_script.exists():
-        env["PYTHONSTARTUP"] = str(compat_script.resolve())
-
-    # Garantir que rfdiffusion et se3_transformer sont visibles par python
-    rfdiff_root = inference_script.parent.parent
-    se3_root = rfdiff_root / "env" / "SE3Transformer"
+    rf2aa_dir = rfdiff_root / "lib" / "rf2aa"
     current_pp = env.get("PYTHONPATH", "")
-    paths = [str(rfdiff_root), str(se3_root)]
+    paths = [str(rfdiff_root), str(rf2aa_dir)]
     if current_pp:
         paths.append(current_pp)
     env["PYTHONPATH"] = os.pathsep.join(paths)
@@ -248,6 +272,7 @@ def _invoke_rfdiffusion(
         text=True,
         check=False,
         env=env,
+        cwd=str(rfdiff_root),
     )
 
     if result.returncode != 0:
@@ -271,15 +296,31 @@ def _invoke_rfdiffusion(
 def _collect_scaffolds(output_dir: Path, run_id: str, n_variants: int) -> list[Scaffold]:
     """Scanne le répertoire et retourne les Scaffold correspondants aux PDB générés."""
     scaffolds: list[Scaffold] = []
+    # Recherche robuste par nommage direct ou glob
     for i in range(n_variants):
-        pdb = output_dir / f"{run_id}_scaffold_{i}.pdb"
-        if pdb.exists():
-            n_res = count_pdb_residues(pdb)
-            scaffolds.append(Scaffold(index=i, pdb_path=pdb, run_id=run_id, n_residues=n_res))
+        candidates = [
+            output_dir / f"{run_id}_scaffold_{i}.pdb",
+            output_dir / f"{run_id}_scaffold_{i:03d}.pdb",
+            output_dir / f"{run_id}_scaffold_{i:04d}.pdb",
+        ]
+        found = None
+        for c in candidates:
+            if c.exists():
+                found = c
+                break
+        if not found:
+            # Recherche par motif
+            matches = sorted(output_dir.glob(f"*{i}.pdb"))
+            if matches:
+                found = matches[0]
+
+        if found:
+            n_res = count_pdb_residues(found)
+            scaffolds.append(Scaffold(index=i, pdb_path=found, run_id=run_id, n_residues=n_res))
         else:
             import logging as _logging
             _logging.getLogger("optobind").warning(
-                "  [WARN] PDB attendu introuvable : %s", pdb
+                "  [WARN] PDB attendu introuvable pour variant %d sous : %s", i, output_dir
             )
     return scaffolds
 
