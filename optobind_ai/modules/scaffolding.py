@@ -114,17 +114,20 @@ def run_rfdiffusion(
 
 def _build_contigs(cfg: dict[str, Any], backbone_len: tuple[int, int]) -> str:
     """
-    Construit la chaîne ``contigs`` passée à RFdiffusion.
+    Construit la chaîne ``contigs`` passée à RFdiffusion All-Atom.
 
-    Le format est : ``A1-N/0 MIN-MAX`` où :
-    - ``A1-N``  = chaîne fixe (site de liaison de la cible)
-    - ``MIN-MAX`` = segment à halluciner (squelette de novo)
+    Dans RFdiffusion All-Atom, les segments sont séparés par des virgules sans espace :
+    Ex : ``A1-1,70-100`` (conserver résidu A1 de la cible, halluciner 70-100 AA de novo).
     """
     base = cfg.get("contigs", None)
     if base:
+        if " " in base or "/" in base:
+            # Conversion de l'ancienne syntaxe RFdiffusion v1 (espace/slash) vers All-Atom (virgule)
+            parts = [p.split("/")[0] for p in base.split() if p and p != "0"]
+            return ",".join(parts)
         return base
     lo, hi = backbone_len
-    return f"A1-5/0 {lo}-{hi}"
+    return f"A1-1,{lo}-{hi}"
 
 
 def _find_or_clone_rfdiffusion(logger: logging.Logger) -> tuple[Path, Path]:
@@ -217,8 +220,11 @@ def _invoke_rfdiffusion(
     import os
 
     def _safe_path(p: Path) -> str:
-        p = p.resolve()
-        s = str(p)
+        s = str(p.resolve())
+        # Nettoyage des espaces par le lien symbolique projet dans WSL2
+        for marker in ("/mnt/c/Users/colao/Desktop/Projet protéine", "/mnt/c/Users/colao/Desktop/Projet prot\xe9ine"):
+            if marker in s:
+                s = s.replace(marker, "/tmp/optobind_project")
         if " " not in s:
             return s
         link_name = "/tmp/optobind_" + p.name.replace(" ", "_")
@@ -226,7 +232,7 @@ def _invoke_rfdiffusion(
             lp = Path(link_name)
             if lp.exists() or lp.is_symlink():
                 lp.unlink()
-            lp.symlink_to(p)
+            lp.symlink_to(p.resolve())
             return link_name
         except Exception:
             return s

@@ -12,7 +12,7 @@ inputs:
 # Paramètres globaux de design
 # ─────────────────────────────────────────────────────────────────────────────
 design:
-  n_variants  : 5         # Nombre de variants à générer (1–50)
+  n_variants  : 2         # Nombre de variants à générer (1–50, 2 pour test CPU rapide)
   min_length  : 70        # Longueur minimale du squelette (en AA)
   max_length  : 100       # Longueur maximale du squelette (en AA)
   pH          : 7.4       # pH cible (impact sur protonation des His)
@@ -22,12 +22,12 @@ design:
 # ─────────────────────────────────────────────────────────────────────────────
 rfdiffusion:
   model_weights     : "weights/RFDiffusionAA_paper_weights.pt"
-  num_steps         : 200          # Nombre de pas de diffusion (200 recommandé)
+  num_steps         : 25           # Nombre de pas de diffusion (25 pour CPU rapide, 200 sur GPU)
   noise_scale_ca    : 1.0
   noise_scale_frame : 1.0
-  # Contigs : format RFdiffusion — segments fixes / hallucines
-  # "A1-5/0 70-100" = fixer résidus A1-A5, halluciner 70-100 AA
-  contigs           : "A1-5/0 70-100"
+  # Contigs : format RFdiffusion All-Atom — segments séparés par des virgules
+  # "A1-1,70-100" = conserver résidu A1 (site de liaison), halluciner 70-100 AA de novo
+  contigs           : "A1-1,70-100"
   # Résidus chauds (hotspots) imposant la poche de liaison (ex: A12+A34)
   hotspot_residues  : []
   use_cuda          : true

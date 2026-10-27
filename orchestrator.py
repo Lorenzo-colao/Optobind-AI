@@ -52,13 +52,17 @@ if sys.platform == "win32" and "--wsl-passthrough" not in sys.argv:
             capture_output=True, text=True,
         )
         if "ok" in check_env.stdout:
-            # Construire les arguments CLI sans interpréter de chemins Windows
+            # Créer un lien symbolique sans espace dans /tmp sous WSL2
+            subprocess.run([
+                "wsl", "-d", "Ubuntu", "-e", "bash", "-c",
+                f"ln -sfn '{wsl_dir}' /tmp/optobind_project"
+            ], check=False)
             safe_args = [a.replace("\\", "/") for a in sys.argv[1:]]
             cli_args = " ".join(f'"{a}"' for a in safe_args)
             print("[OptoBind-AI] Redirection vers WSL2 Ubuntu (env: optobind-ai)...")
             cmd = [
                 "wsl", "-d", "Ubuntu", "-e", "bash", "-c",
-                f"cd '{wsl_dir}' && PYTHONIOENCODING=utf-8 "
+                f"cd /tmp/optobind_project && PYTHONIOENCODING=utf-8 "
                 f"/home/colao/miniconda3/envs/optobind-ai/bin/python orchestrator.py {cli_args}"
             ]
             ret = subprocess.run(cmd)
