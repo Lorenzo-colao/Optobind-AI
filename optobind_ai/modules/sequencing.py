@@ -155,9 +155,11 @@ def _invoke_proteinmpnn(
     parsed_json = tmp_dir / "parsed_pdbs.json"
     _parse_pdbs(scaffold.pdb_path, parsed_json, parse_script, logger)
 
-    # Commande principale ProteinMPNN
+    runner_script = (Path(__file__).resolve().parent.parent / "utils" / "runner.py").resolve()
+
+    # Commande principale ProteinMPNN via le runner de compatibilité
     cmd = [
-        "python", str(mpnn_script),
+        sys.executable, str(runner_script), str(mpnn_script),
         "--jsonl_path",          str(parsed_json),
         "--out_folder",          str(tmp_dir),
         "--num_seq_per_target",  str(num_seq),

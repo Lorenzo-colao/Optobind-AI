@@ -169,9 +169,11 @@ def _invoke_rfdiffusion(
     # Préfixe de sortie
     output_prefix = str(output_dir / f"{run_id}_scaffold")
 
-    # Construction de la commande CLI de RFdiffusion All-Atom
+    runner_script = (Path(__file__).resolve().parent.parent / "utils" / "runner.py").resolve()
+
+    # Construction de la commande CLI de RFdiffusion All-Atom via le runner de compatibilité
     cmd = [
-        "python", str(inference_script),
+        sys.executable, str(runner_script), str(inference_script),
         f"inference.input_pdb={target_pdb}",
         f"inference.output_prefix={output_prefix}",
         f"inference.num_designs={n_variants}",
