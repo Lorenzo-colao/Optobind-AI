@@ -177,7 +177,13 @@ def _invoke_proteinmpnn(
 
     logger.debug("  [CMD] %s", " ".join(cmd))
 
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    import os
+    env = os.environ.copy()
+    mpnn_root = mpnn_script.parent
+    current_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{mpnn_root}:{current_pp}"
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
 
     if result.returncode != 0:
         logger.error("[ProteinMPNN] STDERR:\n%s", textwrap.indent(result.stderr, "    "))

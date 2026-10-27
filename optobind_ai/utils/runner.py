@@ -25,14 +25,27 @@ try:
 except Exception:
     pass
 
+from pathlib import Path
+
 if len(sys.argv) > 1:
     target_script = sys.argv.pop(1)
-    sys.argv[0] = target_script
-    with open(target_script, "rb") as fh:
-        code = compile(fh.read(), target_script, "exec")
+    target_path = Path(target_script).resolve()
+    sys.argv[0] = str(target_path)
+
+    # Ajouter automatiquement la racine du repo et ses sous-modules au sys.path
+    script_dir = target_path.parent
+    repo_dir = script_dir.parent
+    se3_dir = repo_dir / "env" / "SE3Transformer"
+
+    for candidate in (repo_dir, se3_dir, script_dir):
+        if candidate.exists() and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+
+    with open(target_path, "rb") as fh:
+        code = compile(fh.read(), str(target_path), "exec")
     globs = {
         "__name__": "__main__",
-        "__file__": target_script,
+        "__file__": str(target_path),
         "__doc__": None,
     }
     exec(code, globs)

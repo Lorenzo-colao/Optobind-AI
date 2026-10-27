@@ -220,12 +220,18 @@ def _invoke_rfdiffusion(
 
     logger.debug("  [CMD] %s", " ".join(cmd))
 
-    # Injection du patch de compatibilité pour Python 3.10+
+    # Injection du patch de compatibilité et des chemins dans PYTHONPATH
     import os
     env = os.environ.copy()
     compat_script = Path(__file__).parent.parent / "utils" / "compat.py"
     if compat_script.exists():
         env["PYTHONSTARTUP"] = str(compat_script.resolve())
+
+    # Garantir que rfdiffusion et se3_transformer sont visibles par python
+    rfdiff_root = inference_script.parent.parent
+    se3_root = rfdiff_root / "env" / "SE3Transformer"
+    current_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{rfdiff_root}:{se3_root}:{current_pp}"
 
     result = subprocess.run(
         cmd,
