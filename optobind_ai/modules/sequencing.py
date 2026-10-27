@@ -181,7 +181,10 @@ def _invoke_proteinmpnn(
     env = os.environ.copy()
     mpnn_root = mpnn_script.parent
     current_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{mpnn_root}:{current_pp}"
+    paths = [str(mpnn_root)]
+    if current_pp:
+        paths.append(current_pp)
+    env["PYTHONPATH"] = os.pathsep.join(paths)
 
     result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
 

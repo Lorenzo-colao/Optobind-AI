@@ -231,7 +231,10 @@ def _invoke_rfdiffusion(
     rfdiff_root = inference_script.parent.parent
     se3_root = rfdiff_root / "env" / "SE3Transformer"
     current_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{rfdiff_root}:{se3_root}:{current_pp}"
+    paths = [str(rfdiff_root), str(se3_root)]
+    if current_pp:
+        paths.append(current_pp)
+    env["PYTHONPATH"] = os.pathsep.join(paths)
 
     result = subprocess.run(
         cmd,
