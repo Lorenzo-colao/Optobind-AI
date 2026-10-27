@@ -149,6 +149,28 @@ def _find_or_clone_rfdiffusion(logger: logging.Logger) -> tuple[Path, Path]:
     return Path("RFdiffusion/scripts/run_inference.py"), Path("RFdiffusion/schedules")
 
 
+def _patch_se3_pooling() -> None:
+    """Corrige l'import AvgPooling dans SE3Transformer pour les versions récentes de DGL."""
+    import site
+    try:
+        search_dirs = site.getsitepackages() + [site.getusersitepackages()]
+    except Exception:
+        search_dirs = []
+    for sdir in search_dirs:
+        p = Path(sdir) / "se3_transformer" / "model" / "layers" / "pooling.py"
+        if p.exists():
+            try:
+                text = p.read_text(encoding="utf-8")
+                if "from dgl.nn.pytorch import AvgPooling, MaxPooling" in text:
+                    text = text.replace(
+                        "from dgl.nn.pytorch import AvgPooling, MaxPooling",
+                        "try:\n    from dgl.nn.pytorch import AvgPooling, MaxPooling\nexcept ImportError:\n    from dgl.nn import AvgPooling, MaxPooling",
+                    )
+                    p.write_text(text, encoding="utf-8")
+            except Exception:
+                pass
+
+
 def _invoke_rfdiffusion(
     target_pdb    : Path,
     ligand_file   : Path,
@@ -166,6 +188,7 @@ def _invoke_rfdiffusion(
     """Lance RFdiffusion All-Atom via subprocess."""
 
     inference_script, schedules_dir = _find_or_clone_rfdiffusion(logger)
+    _patch_se3_pooling()
 
     # Préfixe de sortie
     output_prefix = str(output_dir / f"{run_id}_scaffold")
