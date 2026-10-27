@@ -21,6 +21,13 @@ Version : 0.1.0
 
 from __future__ import annotations
 
+# Patch de rétrocompatibilité Python 3.10+ (pour dgl et dépendances anciennes)
+import collections
+import collections.abc
+for _attr in ("Mapping", "Iterable", "Sequence", "MutableMapping", "Callable"):
+    if not hasattr(collections, _attr) and hasattr(collections.abc, _attr):
+        setattr(collections, _attr, getattr(collections.abc, _attr))
+
 import argparse
 import logging
 import sys

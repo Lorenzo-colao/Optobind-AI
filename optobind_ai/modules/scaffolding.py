@@ -170,11 +170,19 @@ def _invoke_rfdiffusion(
 
     logger.debug("  [CMD] %s", " ".join(cmd))
 
+    # Injection du patch de compatibilité pour Python 3.10+
+    import os
+    env = os.environ.copy()
+    compat_script = Path(__file__).parent.parent / "utils" / "compat.py"
+    if compat_script.exists():
+        env["PYTHONSTARTUP"] = str(compat_script.resolve())
+
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
     if result.returncode != 0:
