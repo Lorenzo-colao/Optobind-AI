@@ -179,18 +179,45 @@ def _invoke_proteinmpnn(
         logger.warning("  [DEVICE] CUDA demandé pour ProteinMPNN mais absent. Bascule automatique sur CPU.")
         use_cuda = False
 
+    # ── Résolution automatique et infaillible des poids du modèle ProteinMPNN ─
+    weights_dir = None
+    model_name = "v_48_020"
+
+    # 1. Vérification du chemin spécifié dans la config
     if model_weights:
-        weights_path = Path(model_weights)
-        if weights_path.is_file():
-            weights_dir = weights_path.parent
-            model_name = "v_48_020"
+        w_path = Path(model_weights)
+        if w_path.is_file():
+            weights_dir = w_path.parent
             for m_cand in ("v_48_002", "v_48_010", "v_48_020", "v_48_030"):
-                if m_cand in weights_path.name:
+                if m_cand in w_path.name:
                     model_name = m_cand
                     break
-            cmd += ["--path_to_model_weights", str(weights_dir), "--model_name", model_name]
-        else:
-            cmd += ["--path_to_model_weights", str(weights_path)]
+            # ProteinMPNN exige strictement un fichier nommé {model_name}.pt dans weights_dir
+            target_file = weights_dir / f"{model_name}.pt"
+            if not target_file.exists():
+                try:
+                    import shutil
+                    shutil.copyfile(w_path, target_file)
+                except Exception:
+                    pass
+        elif w_path.is_dir():
+            weights_dir = w_path
+
+    # 2. Si non trouvé ou si {model_name}.pt manque, chercher dans vanilla_model_weights de ProteinMPNN
+    mpnn_root = mpnn_script.parent
+    vanilla_dir = mpnn_root / "vanilla_model_weights"
+    if weights_dir is None or not (weights_dir / f"{model_name}.pt").exists():
+        if (vanilla_dir / f"{model_name}.pt").exists():
+            weights_dir = vanilla_dir
+        elif (Path("weights") / f"{model_name}.pt").exists():
+            weights_dir = Path("weights")
+        elif (Path("weights") / f"ProteinMPNN_{model_name}.pt").exists():
+            import shutil
+            shutil.copyfile(Path("weights") / f"ProteinMPNN_{model_name}.pt", Path("weights") / f"{model_name}.pt")
+            weights_dir = Path("weights")
+
+    if weights_dir is not None:
+        cmd += ["--path_to_model_weights", str(weights_dir), "--model_name", model_name]
     #if not use_cuda:
         #cmd += ["--device", "cpu"]
 
