@@ -77,8 +77,16 @@ def run_proteinmpnn(
 
     all_sequences: list[DesignedSequence] = []
 
-    for scaffold in scaffolds:
+    try:
+        from tqdm import tqdm
+        scaffold_iter = tqdm(scaffolds, desc="  [2/3] ProteinMPNN Séquençage", unit="scaffold", dynamic_ncols=True)
+    except ImportError:
+        scaffold_iter = scaffolds
+
+    for scaffold in scaffold_iter:
         logger.info("  ── Scaffold %03d : %s", scaffold.index, scaffold.pdb_path.name)
+        if hasattr(scaffold_iter, "set_postfix_str"):
+            scaffold_iter.set_postfix_str(f"{scaffold.pdb_path.name} ({scaffold.n_residues} AA)")
 
         if dry_run:
             seqs = _dry_run_sequences(scaffold, num_seq, output_dir)
@@ -152,16 +160,12 @@ def _invoke_proteinmpnn(
     tmp_dir = output_dir / scaffold.name
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Parsing de structure (pdb → json via helper_scripts)
-    parsed_json = tmp_dir / "parsed_pdbs.json"
-    _parse_pdbs(scaffold.pdb_path, parsed_json, parse_script, logger)
-
     runner_script = (Path(__file__).resolve().parent.parent / "utils" / "runner.py").resolve()
 
-    # Commande principale ProteinMPNN via le runner de compatibilité
+    # Commande principale ProteinMPNN via le runner de compatibilité avec --pdb_path direct
     cmd = [
         sys.executable, str(runner_script), str(mpnn_script),
-        "--jsonl_path",          str(parsed_json),
+        "--pdb_path",            str(scaffold.pdb_path),
         "--out_folder",          str(tmp_dir),
         "--num_seq_per_target",  str(num_seq),
         "--sampling_temp",       str(sampling_temp),
@@ -176,9 +180,19 @@ def _invoke_proteinmpnn(
         use_cuda = False
 
     if model_weights:
-        cmd += ["--checkpoint_path", model_weights]
-    if not use_cuda:
-        cmd += ["--device", "cpu"]
+        weights_path = Path(model_weights)
+        if weights_path.is_file():
+            weights_dir = weights_path.parent
+            model_name = "v_48_020"
+            for m_cand in ("v_48_002", "v_48_010", "v_48_020", "v_48_030"):
+                if m_cand in weights_path.name:
+                    model_name = m_cand
+                    break
+            cmd += ["--path_to_model_weights", str(weights_dir), "--model_name", model_name]
+        else:
+            cmd += ["--path_to_model_weights", str(weights_path)]
+    #if not use_cuda:
+        #cmd += ["--device", "cpu"]
 
     logger.debug("  [CMD] %s", " ".join(cmd))
 
@@ -211,7 +225,7 @@ def _parse_pdbs(pdb_path: Path, out_json: Path, parse_script: Path, logger: logg
     pour convertir le PDB en JSON.
     """
     cmd = [
-        "python", str(parse_script),
+        sys.executable, str(parse_script),
         "--input_path",  str(pdb_path.parent),
         "--output_path", str(out_json),
     ]

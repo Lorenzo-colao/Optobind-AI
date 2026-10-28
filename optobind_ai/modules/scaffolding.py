@@ -27,9 +27,22 @@ from typing import Any
 from optobind_ai.utils.io_helpers import Scaffold, count_pdb_residues
 
 
+from optobind_ai.utils.patcher import patch_all_rfdiffusion
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Point d'entrée public
 # ──────────────────────────────────────────────────────────────────────────────
+def _patch_rfdiffusion(rfdiff_root: Path | None = None) -> None:
+    """
+    Applique tous les patches requis (filter_het, collinearité SO(3), contigs)
+    sur l'arborescence RFdiffusion All-Atom.
+    """
+    try:
+        patch_all_rfdiffusion(rfdiff_root)
+    except Exception as exc:
+        logging.getLogger("optobind").warning(f"Erreur lors du patch de RFdiffusion : {exc}")
+
+
 
 def run_rfdiffusion(
     target_pdb   : Path,
@@ -121,11 +134,8 @@ def _build_contigs(cfg: dict[str, Any], backbone_len: tuple[int, int]) -> str:
     """
     base = cfg.get("contigs", None)
     if base:
-        if " " in base or "/" in base:
-            # Conversion de l'ancienne syntaxe RFdiffusion v1 (espace/slash) vers All-Atom (virgule)
-            parts = [p.split("/")[0] for p in base.split() if p and p != "0"]
-            return ",".join(parts)
-        return base
+        # Remplacer les slashes ou espaces par des virgules pour respecter la syntaxe All-Atom
+        return base.replace("/", ",").replace(" ", ",")
     lo, hi = backbone_len
     return f"A1-1,{lo}-{hi}"
 
@@ -179,14 +189,15 @@ def _patch_se3_pooling() -> None:
 
 
 def _detect_ligand_name(pdb_path: Path, ligand_file: Path) -> str:
-    """Détecte le code résidu du ligand (ex: ZN) présent dans le PDB cible ou son fichier."""
+    """Détecte le code résidu du ligand organique en ignorant les ions métalliques."""
+    metals = {"ZN", "MG", "CA", "FE", "CU", "MN", "NA", "K", "CL"}
     if pdb_path.exists():
         try:
             with open(pdb_path, "r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     if line.startswith("HETATM"):
                         res_name = line[17:20].strip()
-                        if res_name:
+                        if res_name and res_name not in metals:
                             return res_name
         except Exception:
             pass
@@ -212,48 +223,71 @@ def _invoke_rfdiffusion(
 
     inference_script, rfdiff_root = _find_or_clone_rfdiffusion(logger)
     _patch_se3_pooling()
+    _patch_rfdiffusion(rfdiff_root)
 
     # Préfixe de sortie
     output_prefix = str(output_dir / f"{run_id}_scaffold")
 
     # ── Résolution des chemins sans espaces pour Hydra ───────────────────────
     import os
+    import sys as _sys
+    import platform
 
     def _safe_path(p: Path) -> str:
-        s = str(p.resolve())
-        # Nettoyage des espaces par le lien symbolique projet dans WSL2
-        for marker in ("/mnt/c/Users/colao/Desktop/Projet protéine", "/mnt/c/Users/colao/Desktop/Projet prot\xe9ine"):
-            if marker in s:
-                s = s.replace(marker, "/tmp/optobind_project")
-        if " " not in s:
-            return s
-        link_name = "/tmp/optobind_" + p.name.replace(" ", "_")
-        try:
-            lp = Path(link_name)
-            if lp.exists() or lp.is_symlink():
-                lp.unlink()
-            lp.symlink_to(p.resolve())
-            return link_name
-        except Exception:
-            return s
+        """
+        Retourne un chemin utilisable par Hydra/RFdiffusion.
+        Sur Windows natif : utilise le chemin absolu avec forward slashes.
+        Sur Linux/WSL : tente un lien symbolique /tmp pour éviter les espaces.
+        """
+        p_res = p.resolve()
+        s = str(p_res).replace("\\", "/")
 
-    safe_target     = _safe_path(target_pdb)
-    safe_prefix     = _safe_path(output_dir / f"{run_id}_scaffold")
-    safe_weights    = _safe_path(Path(model_weights))
+        # Sur Linux/macOS, on tente un lien symbolique dans /tmp
+        if platform.system() != "Windows":
+            project_root = Path(__file__).resolve().parent.parent.parent
+            tmp_project = Path("/tmp/optobind_project")
+            try:
+                if not tmp_project.exists():
+                    tmp_project.symlink_to(project_root, target_is_directory=True)
+                s_root = str(project_root).replace("\\", "/")
+                if s_root in s:
+                    s = s.replace(s_root, "/tmp/optobind_project")
+            except Exception:
+                pass
+
+        return s
+
+    safe_target  = _safe_path(target_pdb)
+    safe_prefix  = _safe_path(output_dir / f"{run_id}_scaffold")
+    safe_weights = _safe_path(Path(model_weights)) if model_weights else ""
+
+    # Détecter si le ligand organique est présent dans le PDB cible
+    lig_code = _detect_ligand_name(target_pdb, ligand_file)
+
+    # Format des arguments Hydra : chaque argument est un élément séparé de la liste.
+    # subprocess ne passe PAS par un shell, donc les guillemets internes n'aident pas.
+    # Hydra accepte les espaces dans les valeurs si l'argument est un élément de liste entier.
+    # Pour les chemins avec espaces, on utilise la syntaxe Hydra avec guillemets YAML : '+key="val"'
+    # ou on échappe via le lien symbolique /tmp (Linux/WSL) déjà géré dans _safe_path.
+    input_pdb_val  = safe_target
+    output_pfx_val = safe_prefix
 
     # Commande native pour rf_diffusion_all_atom
+    # contigmap.contigs=[...] — les crochets font partie de la valeur Hydra (liste YAML)
     cmd = [
         sys.executable, str(inference_script),
-        f"inference.input_pdb={safe_target}",
-        f"inference.output_prefix={safe_prefix}",
+        f"inference.input_pdb={input_pdb_val}",
+        f"inference.output_prefix={output_pfx_val}",
         f"inference.num_designs={n_variants}",
         f"diffuser.T={num_steps}",
-        f"contigmap.contigs=[{contigs}]",
-        f"inference.ckpt_path={safe_weights}",
+        f"contigmap.contigs=['{contigs}']",
         "inference.deterministic=True",
     ]
 
-    lig_code = _detect_ligand_name(target_pdb, ligand_file)
+    if safe_weights:
+        cmd.append(f"inference.ckpt_path={safe_weights}")
+
+    # N'ajouter inference.ligand que si un ligand organique est présent dans le PDB
     if lig_code:
         cmd.append(f"inference.ligand={lig_code}")
 
@@ -272,24 +306,67 @@ def _invoke_rfdiffusion(
         paths.append(current_pp)
     env["PYTHONPATH"] = os.pathsep.join(paths)
 
-    result = subprocess.run(
+    try:
+        from tqdm import tqdm
+        has_tqdm = True
+    except ImportError:
+        has_tqdm = False
+
+    total_steps = n_variants * num_steps
+    pbar = tqdm(total=total_steps, desc="  [1/3] RFdiffusion 3D", unit="step", dynamic_ncols=True) if has_tqdm else None
+
+    import re
+    re_timestep = re.compile(r"Timestep\s+(\d+)")
+    re_design   = re.compile(r"making design\s+(\d+)\s+of\s+(\d+):(\d+)", re.IGNORECASE)
+
+    stdout_lines = []
+    stderr_lines = []
+
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        check=False,
+        bufsize=1,
         env=env,
         cwd=str(rfdiff_root),
     )
 
-    if result.returncode != 0:
-        logger.error("[RFdiffusion] STDERR:\n%s", textwrap.indent(result.stderr, "    "))
+    current_design = 0
+    if proc.stdout:
+        for line in iter(proc.stdout.readline, ""):
+            stdout_lines.append(line)
+            m_des = re_design.search(line)
+            if m_des:
+                current_design = int(m_des.group(1)) + 1
+                if pbar:
+                    pbar.set_description(f"  [1/3] RFdiffusion [Variant {current_design}/{n_variants}]")
+
+            m_ts = re_timestep.search(line)
+            if m_ts:
+                if pbar:
+                    pbar.update(1)
+                    pbar.set_postfix_str(f"t={m_ts.group(1)}")
+            elif "Reading checkpoint" in line or "Loading checkpoint" in line:
+                if pbar:
+                    pbar.set_postfix_str("Chargement poids...")
+
+        proc.stdout.close()
+
+    ret = proc.wait()
+    if pbar:
+        # Compléter la barre si nécessaire
+        if pbar.n < total_steps and ret == 0:
+            pbar.update(total_steps - pbar.n)
+        pbar.close()
+
+    if ret != 0:
+        err_msg = "".join(stdout_lines[-40:])
+        logger.error("[RFdiffusion] Erreur d'exécution :\n%s", textwrap.indent(err_msg, "    "))
         raise RuntimeError(
-            f"RFdiffusion a échoué (code={result.returncode}). "
+            f"RFdiffusion a échoué (code={ret}). "
             "Consultez les logs pour les détails."
         )
-
-    if result.stdout:
-        logger.debug("[RFdiffusion] STDOUT:\n%s", textwrap.indent(result.stdout, "    "))
 
     # Collecte des PDB générés
     return _collect_scaffolds(output_dir, run_id, n_variants)
@@ -303,7 +380,13 @@ def _collect_scaffolds(output_dir: Path, run_id: str, n_variants: int) -> list[S
     """Scanne le répertoire et retourne les Scaffold correspondants aux PDB générés."""
     scaffolds: list[Scaffold] = []
     # Recherche robuste par nommage direct ou glob
-    for i in range(n_variants):
+    try:
+        from tqdm import tqdm
+        iterator = tqdm(range(n_variants), desc="  [1/3] Génération scaffolds (dry-run)", unit="scaffold")
+    except ImportError:
+        iterator = range(n_variants)
+
+    for i in iterator:
         candidates = [
             output_dir / f"{run_id}_scaffold_{i}.pdb",
             output_dir / f"{run_id}_scaffold_{i:03d}.pdb",
@@ -346,7 +429,13 @@ def _dry_run_scaffolds(
     lo, hi = backbone_len
     scaffolds: list[Scaffold] = []
 
-    for i in range(n_variants):
+    try:
+        from tqdm import tqdm
+        iterator = tqdm(range(n_variants), desc="  [1/3] Génération scaffolds (dry-run)", unit="scaffold")
+    except ImportError:
+        iterator = range(n_variants)
+
+    for i in iterator:
         n_res  = random.randint(lo, hi)
         pdb_path = output_dir / f"{run_id}_scaffold_{i:03d}.pdb"
         _write_dummy_pdb(pdb_path, n_res)

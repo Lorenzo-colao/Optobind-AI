@@ -27,7 +27,7 @@ rfdiffusion:
   noise_scale_frame : 1.0
   # Contigs : format RFdiffusion All-Atom — segments séparés par des virgules
   # "A1-1,70-100" = conserver résidu A1 (site de liaison), halluciner 70-100 AA de novo
-  contigs           : "A1-1,70-100"
+  contigs           : "A1-4/70-100"
   # Résidus chauds (hotspots) imposant la poche de liaison (ex: A12+A34)
   hotspot_residues  : []
   use_cuda          : true

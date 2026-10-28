@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -73,7 +74,13 @@ def run_alphafold(
 
     results: list[ValidationResult] = []
 
-    for seq in sequences:
+    try:
+        from tqdm import tqdm
+        seq_iter = tqdm(sequences, desc=f"  [3/3] Validation {backend.upper()}", unit="seq", dynamic_ncols=True)
+    except ImportError:
+        seq_iter = sequences
+
+    for seq in seq_iter:
         logger.info("  ── %s  (len=%d AA)", seq.name, len(seq.sequence))
 
         if dry_run:
@@ -93,6 +100,8 @@ def run_alphafold(
 
         results.append(res)
         status = "✓ PASS" if res.passed else "✗ FAIL"
+        if hasattr(seq_iter, "set_postfix_str"):
+            seq_iter.set_postfix_str(f"{seq.name.split('_')[-2]}_{seq.name.split('_')[-1]} {status} (pLDDT={res.plddt_mean:.1f})")
         logger.info(
             "       %s  pLDDT=%.1f  RMSD=%.2f Å  clashes=%d",
             status, res.plddt_mean, res.rmsd, res.n_clashes,
@@ -186,14 +195,8 @@ def _run_chai1(
     logger      : logging.Logger,
 ) -> tuple[Path | None, list[float]]:
     """
-    Lance Chai-1 (open-source, licence CC-BY 4.0) pour prédire
-    le complexe ternaire.
-
-    Chai-1 accepte un fichier FASTA multi-entité :
-      - Entité 1 : séquence protéique (PROTEIN)
-      - Entité 2 : SMILES du ligand (LIGAND)
-
-    Ref : Chai Discovery (2024), https://github.com/chaidiscovery/chai-lab
+    Lance Chai-1 via son API Python native run_inference() pour prédire
+    le complexe ternaire (Protéine + DFHBI-1T + Zn²⁺).
     """
     out_dir = output_dir / seq.name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -203,26 +206,38 @@ def _run_chai1(
     ligand_smiles = _sdf_to_smiles(ligand_file, logger)
     _write_chai_fasta(fasta_path, seq.sequence, ligand_smiles)
 
-    cmd = [
-        "python", "-m", "chai_lab.chai1",
-        "--fasta",        str(fasta_path),
-        "--output_dir",   str(out_dir),
-        "--num_trunk_recycles", str(cfg.get("num_trunk_recycles", 3)),
-        "--num_diffn_samples",  str(cfg.get("num_diffn_samples",  5)),
-    ]
-    if model_dir:
-        cmd += ["--model_dir", model_dir]
-    if not use_cuda:
-        cmd += ["--device", "cpu"]
+    python_env_path = "/home/colao/miniconda3/envs/optobind-ai/bin/python"
+    recycles = int(cfg.get("num_trunk_recycles", 1))
+    samples  = int(cfg.get("num_diffn_samples", 1))
+    use_esm  = bool(cfg.get("use_esm_embeddings", True))
 
-    logger.debug("  [CHAI-1] %s", " ".join(cmd))
+    runner_py = f"""
+import pathlib
+import sys
+try:
+    from chai_lab.chai1 import run_inference
+    cands = run_inference(
+        fasta_file=pathlib.Path('{fasta_path.as_posix()}'),
+        output_dir=pathlib.Path('{out_dir.as_posix()}'),
+        num_trunk_recycles={recycles},
+        num_diffn_samples={samples},
+        use_esm_embeddings={use_esm},
+        low_memory=True,
+    )
+    print("CHAI1_DONE")
+except Exception as exc:
+    print(f"CHAI1_FAIL: {{exc}}", file=sys.stderr)
+    sys.exit(1)
+"""
+
+    cmd = [python_env_path, "-c", runner_py]
+    logger.debug("  [CHAI-1] Inférence native via chai_lab.chai1.run_inference()...")
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     if result.returncode != 0:
-        logger.error("[CHAI-1] Erreur :\n%s", textwrap.indent(result.stderr, "    "))
+        logger.warning("[CHAI-1] Non disponible ou a échoué :\n%s", textwrap.indent(result.stderr, "    "))
         return None, []
 
-    # Chai-1 écrit pred.model_idx_0.cif ou pred.model_idx_0.pdb
     pred_pdb = _find_prediction_file(out_dir, ["*.pdb", "*.cif"])
     plddt    = _parse_chai_plddt(out_dir, logger)
     return pred_pdb, plddt
@@ -244,7 +259,7 @@ def _run_esmfold(
     predicted_pdb = out_dir / "esmfold_pred.pdb"
 
     cmd = [
-        "python", "-c",
+        sys.executable, "-c",
         f"""
 import esm, torch
 model = esm.pretrained.esmfold_v1()
@@ -311,7 +326,7 @@ def _run_alphafold3(
     input_json.write_text(_json.dumps(af3_input, indent=2), encoding="utf-8")
 
     cmd = [
-        "python", "alphafold3/run_alphafold.py",
+        sys.executable, "alphafold3/run_alphafold.py",
         "--input_json",  str(input_json),
         "--output_dir",  str(out_dir),
         "--model_dir",   model_dir or "weights/alphafold3/",
@@ -480,10 +495,8 @@ def _sdf_to_smiles(ligand_file: Path, logger: logging.Logger) -> str:
     Convertit un SDF en SMILES via RDKit (si disponible),
     ou retourne le SMILES hardcodé du DFHBI-1T comme fallback.
     """
-    # SMILES du DFHBI-1T (fluorophore des Spinach aptamers)
-    DFHBI1T_SMILES = (
-        "CC1=C(/C=C2\\C(=O)Nc3ccccc32)SC=C1"  # simplifié — remplacer par le SMILES exact
-    )
+    # SMILES exact du DFHBI-1T (PubChem CID 101889712)
+    DFHBI1T_SMILES = "CC1=N/C(=C\\C2=CC(=C(C(=C2)F)O)F)/C(=O)N1CC(F)(F)F"
 
     if ligand_file.suffix.lower() == ".sdf":
         try:
