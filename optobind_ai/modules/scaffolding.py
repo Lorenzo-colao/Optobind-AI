@@ -326,10 +326,10 @@ def _invoke_rfdiffusion(
     except ImportError:
         has_tqdm = False
 
-    total_steps = n_variants * num_steps
-    pbar = tqdm(total=total_steps, desc="  [1/3] RFdiffusion 3D", unit="step", dynamic_ncols=True) if has_tqdm else None
-
     import re
+    import threading
+    import time as _time
+
     re_timestep = re.compile(r"Timestep\s+(\d+)")
     re_design   = re.compile(r"making design\s+(\d+)\s+of\s+(\d+):(\d+)", re.IGNORECASE)
 
@@ -346,30 +346,69 @@ def _invoke_rfdiffusion(
         cwd=str(rfdiff_root),
     )
 
+    # ── Barre de chargement des poids (phase d'initialisation indéterminée) ──
+    if has_tqdm:
+        from tqdm import tqdm as _tqdm
+        loading_bar = _tqdm(
+            total=0,
+            desc="  ⏳ Chargement modèle & poids (~3.7 GB)",
+            bar_format="{desc}  {elapsed}s écoulées",
+            dynamic_ncols=True,
+        )
+    else:
+        loading_bar = None
+
+    total_steps = n_variants * num_steps
+    pbar = None           # Ouvert seulement quand la diffusion commence
+    diffusion_started = False
+
     current_design = 0
     if proc.stdout:
         for line in iter(proc.stdout.readline, ""):
             stdout_lines.append(line)
+
+            # Détection démarrage design
             m_des = re_design.search(line)
             if m_des:
                 current_design = int(m_des.group(1)) + 1
-                if pbar:
-                    pbar.set_description(f"  [1/3] RFdiffusion [Variant {current_design}/{n_variants}]")
 
+            # Détection premier timestep → fermer chargement, ouvrir diffusion
             m_ts = re_timestep.search(line)
+            if m_ts and not diffusion_started:
+                diffusion_started = True
+                if loading_bar is not None:
+                    loading_bar.set_description("  ✓ Modèle chargé")
+                    loading_bar.close()
+                    loading_bar = None
+                if has_tqdm:
+                    pbar = _tqdm(
+                        total=total_steps,
+                        desc=f"  [1/3] RFdiffusion [Variant 1/{n_variants}]",
+                        unit="step",
+                        dynamic_ncols=True,
+                    )
+
             if m_ts:
                 if pbar:
                     pbar.update(1)
                     pbar.set_postfix_str(f"t={m_ts.group(1)}")
-            elif "Reading checkpoint" in line or "Loading checkpoint" in line:
-                if pbar:
-                    pbar.set_postfix_str("Chargement poids...")
+                if pbar and m_des:
+                    pbar.set_description(f"  [1/3] RFdiffusion [Variant {current_design}/{n_variants}]")
+
+            # Mise à jour de la barre de chargement (checkpoint)
+            if not diffusion_started and loading_bar is not None:
+                for kw in ("checkpoint", "weight", "poids", "Loading", "Reading", "model"):
+                    if kw.lower() in line.lower():
+                        loading_bar.set_description(f"  ⏳ {line.strip()[:60]}")
+                        break
 
         proc.stdout.close()
 
     ret = proc.wait()
+    # Fermer les barres proprement
+    if loading_bar is not None:
+        loading_bar.close()
     if pbar:
-        # Compléter la barre si nécessaire
         if pbar.n < total_steps and ret == 0:
             pbar.update(total_steps - pbar.n)
         pbar.close()
