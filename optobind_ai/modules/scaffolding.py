@@ -144,24 +144,30 @@ def _find_or_clone_rfdiffusion(logger: logging.Logger) -> tuple[Path, Path]:
     """Trouve ou clone automatiquement RFdiffusion All-Atom et retourne (run_inference.py, rfdiff_root)."""
     candidates = [
         Path("RFdiffusion/run_inference.py"),
-        Path("RFdiffusion/scripts/run_inference.py"),
         Path(__file__).resolve().parent.parent.parent / "RFdiffusion" / "run_inference.py",
-        Path(__file__).resolve().parent.parent.parent / "RFdiffusion" / "scripts" / "run_inference.py",
         Path("/content/Optobind-AI/RFdiffusion/run_inference.py"),
         Path("/content/RFdiffusion/run_inference.py"),
     ]
     for p in candidates:
-        if p.exists():
-            rfdiff_root = p.parent if (p.parent / "config").exists() else (p.parent.parent if (p.parent.parent / "config").exists() else p.parent)
-            return p.resolve(), rfdiff_root.resolve()
+        if p.exists() and (p.parent / "aa_model.py").exists():
+            return p.resolve(), p.parent.resolve()
 
     logger.info("  [AUTO-SETUP] Clonage automatique de RFdiffusion All-Atom...")
     import subprocess as _sp
+    import shutil
+    # Si un dossier RFdiffusion existe mais n'est pas All-Atom (ex: RosettaCommons standard), on le remplace
+    rf_dir = Path("RFdiffusion")
+    if rf_dir.exists() and not (rf_dir / "aa_model.py").exists():
+        logger.info("  [AUTO-SETUP] Remplacement de l'ancien RFdiffusion par rf_diffusion_all_atom...")
+        try:
+            shutil.rmtree(rf_dir)
+        except Exception:
+            pass
+
     _sp.run(["git", "clone", "--recurse-submodules", "https://github.com/baker-laboratory/rf_diffusion_all_atom.git", "RFdiffusion"], check=False)
     for p in candidates:
-        if p.exists():
-            rfdiff_root = p.parent if (p.parent / "config").exists() else (p.parent.parent if (p.parent.parent / "config").exists() else p.parent)
-            return p.resolve(), rfdiff_root.resolve()
+        if p.exists() and (p.parent / "aa_model.py").exists():
+            return p.resolve(), p.parent.resolve()
 
     return Path("RFdiffusion/run_inference.py"), Path("RFdiffusion")
 

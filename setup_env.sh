@@ -43,8 +43,8 @@ fi
 echo ""
 echo "  [1/5] Vérification des sous-modules RFdiffusion & ProteinMPNN..."
 if [ ! -d "RFdiffusion" ]; then
-    echo "  -> Clonage de RFdiffusion..."
-    git clone https://github.com/RosettaCommons/RFdiffusion.git
+    echo "  -> Clonage de RFdiffusion All-Atom..."
+    git clone --recurse-submodules https://github.com/baker-laboratory/rf_diffusion_all_atom.git RFdiffusion
 fi
 
 if [ ! -d "ProteinMPNN" ]; then
