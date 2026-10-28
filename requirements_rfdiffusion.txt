@@ -27,7 +27,6 @@ rdkit
 # ── Utilitaires debug / logging ───────────────────────────────────────────────
 icecream
 fire
-google-fire
 
 # ── Réseau protéique / graphes ────────────────────────────────────────────────
 networkx
