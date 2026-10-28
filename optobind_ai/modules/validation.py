@@ -223,7 +223,9 @@ def _run_chai1(
     runner_py = f"""
 import os
 import sys
+import time
 import pathlib
+import shutil
 
 # Forcer le backend non interactif pour éviter le conflit matplotlib_inline sous Jupyter/Colab
 os.environ["MPLBACKEND"] = "Agg"
@@ -236,18 +238,43 @@ except Exception:
 
 try:
     from chai_lab.chai1 import run_inference
-    cands = run_inference(
-        fasta_file=pathlib.Path('{fasta_path.as_posix()}'),
-        output_dir=pathlib.Path('{out_dir.as_posix()}'),
-        num_trunk_recycles={recycles},
-        num_diffn_samples={samples},
-        use_esm_embeddings={use_esm},
-        low_memory=True,
-    )
-    print("CHAI1_DONE")
 except Exception as exc:
     print(f"CHAI1_FAIL: {{exc}}", file=sys.stderr)
     sys.exit(1)
+
+out_p = pathlib.Path('{out_dir.as_posix()}')
+fasta_p = pathlib.Path('{fasta_path.as_posix()}')
+
+max_retries = 3
+for attempt in range(1, max_retries + 1):
+    try:
+        # Chai-1 exige un répertoire strictement vide à chaque tentative
+        if out_p.exists():
+            for item in out_p.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+
+        cands = run_inference(
+            fasta_file=fasta_p,
+            output_dir=out_p,
+            num_trunk_recycles={recycles},
+            num_diffn_samples={samples},
+            use_esm_embeddings={use_esm},
+            low_memory=True,
+        )
+        print("CHAI1_DONE")
+        sys.exit(0)
+    except Exception as exc:
+        err_str = str(exc)
+        is_net_err = any(k in err_str.lower() for k in ("incompleteread", "connection", "timeout", "broken", "download", "http"))
+        if attempt < max_retries and is_net_err:
+            print(f"Tentative {{attempt}} interrompue (réseau : {{exc}}). Reprise dans 5s...", file=sys.stderr)
+            time.sleep(5)
+            continue
+        print(f"CHAI1_FAIL: {{exc}}", file=sys.stderr)
+        sys.exit(1)
 """
 
     env = os.environ.copy()
