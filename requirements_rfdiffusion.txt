@@ -1,0 +1,53 @@
+# =============================================================================
+# requirements_rfdiffusion.txt — Dépendances de rf_diffusion_all_atom
+# Généré à partir de l'analyse statique des imports Python de tous les fichiers
+# du dépôt baker-laboratory/rf_diffusion_all_atom.
+# =============================================================================
+
+# ── PyTorch & CUDA (à installer séparément avec --index-url pytorch.org) ─────
+# torch==2.5.1+cu118  torchvision==0.20.1+cu118  torchaudio==2.5.1+cu118
+# torchdata==0.7.1
+
+# ── DGL (sans graphbolt, compatible torchdata 0.7.x) ──────────────────────────
+# dgl==1.1.3   (à installer depuis data.dgl.ai)
+
+# ── Core RFdiffusion All-Atom ─────────────────────────────────────────────────
+e3nn==0.3.3
+hydra-core>=1.3
+omegaconf>=2.3
+opt_einsum
+scipy
+numpy<2.0
+
+# ── Chimie structurale ────────────────────────────────────────────────────────
+openbabel-wheel
+biopython
+rdkit
+
+# ── Utilitaires debug / logging ───────────────────────────────────────────────
+icecream
+fire
+google-fire
+
+# ── Réseau protéique / graphes ────────────────────────────────────────────────
+networkx
+
+# ── Format structurel mmCIF ───────────────────────────────────────────────────
+gemmi
+
+# ── GPU monitoring ────────────────────────────────────────────────────────────
+nvidia-ml-py
+
+# ── Tests / assertions ────────────────────────────────────────────────────────
+assertpy
+deepdiff
+
+# ── Diffusion logging ─────────────────────────────────────────────────────────
+# dllogger  (installer depuis GitHub : git+https://github.com/NVIDIA/dllogger)
+
+# ── Données et rapports ───────────────────────────────────────────────────────
+pandas
+openpyxl
+tqdm
+pyyaml
+decorator
