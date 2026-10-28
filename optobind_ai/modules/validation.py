@@ -23,6 +23,7 @@ Backend supporté via la clé ``alphafold.backend`` du fichier YAML :
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 import textwrap
