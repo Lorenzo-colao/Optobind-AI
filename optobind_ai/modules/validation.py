@@ -199,13 +199,21 @@ def _run_chai1(
     Lance Chai-1 via son API Python native run_inference() pour prédire
     le complexe ternaire (Protéine + DFHBI-1T + Zn²⁺).
     """
-    out_dir = output_dir / seq.name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Chai-1 exige un répertoire de sortie STRICTEMENT vide.
+    # On isole les fichiers FASTA d'entrée dans un sous-répertoire séparé.
+    fasta_dir = output_dir / "_chai_fastas"
+    fasta_dir.mkdir(parents=True, exist_ok=True)
+    fasta_path = fasta_dir / f"{seq.name}.fasta"
 
-    # Écriture du FASTA multi-entité pour Chai-1
-    fasta_path = out_dir / "input.fasta"
     ligand_smiles = _sdf_to_smiles(ligand_file, logger)
     _write_chai_fasta(fasta_path, seq.sequence, ligand_smiles)
+
+    # Répertoire de sortie dédié et garanti vide pour Chai-1
+    out_dir = output_dir / seq.name
+    if out_dir.exists():
+        import shutil
+        shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     python_env_path = sys.executable
     recycles = int(cfg.get("num_trunk_recycles", 1))
