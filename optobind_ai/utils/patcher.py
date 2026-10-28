@@ -348,10 +348,66 @@ def _clear_cache(base_dir: Path, name_pattern: str) -> None:
             pass
 
 
+def patch_torchdata_stub() -> bool:
+    """
+    Injecte un stub pour torchdata.datapipes si le module est absent ou trop récent.
+    Nécessaire pour DGL 2.x qui importe torchdata.datapipes.iter.IterDataPipe dans graphbolt.
+    Sans ce stub, DGL lève ModuleNotFoundError au démarrage.
+    """
+    import sys
+    import types
+
+    # Vérifier si torchdata.datapipes.iter.IterDataPipe est accessible
+    try:
+        from torchdata.datapipes.iter import IterDataPipe  # noqa: F401
+        return True  # Pas besoin de stub
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    logger.info("Injection du stub torchdata.datapipes pour compatibilité DGL...")
+
+    # Créer les modules manquants de façon minimale
+    class IterDataPipe:
+        """Stub minimal pour torchdata.datapipes.iter.IterDataPipe."""
+        pass
+
+    # torchdata
+    if "torchdata" not in sys.modules:
+        td = types.ModuleType("torchdata")
+        sys.modules["torchdata"] = td
+    else:
+        td = sys.modules["torchdata"]
+
+    # torchdata.datapipes
+    tdp_name = "torchdata.datapipes"
+    if tdp_name not in sys.modules:
+        tdp = types.ModuleType(tdp_name)
+        sys.modules[tdp_name] = tdp
+        td.datapipes = tdp  # type: ignore[attr-defined]
+    else:
+        tdp = sys.modules[tdp_name]
+
+    # torchdata.datapipes.iter
+    tdpi_name = "torchdata.datapipes.iter"
+    if tdpi_name not in sys.modules:
+        tdpi = types.ModuleType(tdpi_name)
+        sys.modules[tdpi_name] = tdpi
+        tdp.iter = tdpi  # type: ignore[attr-defined]
+    else:
+        tdpi = sys.modules[tdpi_name]
+
+    tdpi.IterDataPipe = IterDataPipe  # type: ignore[attr-defined]
+
+    return True
+
+
 def patch_all_rfdiffusion(rf_dir: Path | str | None = None) -> bool:
     """
     Applique tous les patches requis sur le dossier RFdiffusion spécifié ou détecté.
     """
+    # Toujours patcher torchdata en premier (DGL peut en avoir besoin dès l'import)
+    patch_torchdata_stub()
+
     if rf_dir is None:
         candidates = [
             Path("RFdiffusion"),

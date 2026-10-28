@@ -27,7 +27,15 @@ from typing import Any
 from optobind_ai.utils.io_helpers import Scaffold, count_pdb_residues
 
 
-from optobind_ai.utils.patcher import patch_all_rfdiffusion
+from optobind_ai.utils.patcher import patch_all_rfdiffusion, patch_torchdata_stub
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Injection du stub torchdata dès le chargement du module (avant DGL)
+# ──────────────────────────────────────────────────────────────────────────────
+try:
+    patch_torchdata_stub()
+except Exception:
+    pass
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Point d'entrée public
