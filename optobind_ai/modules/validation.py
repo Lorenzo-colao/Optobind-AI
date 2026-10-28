@@ -206,7 +206,7 @@ def _run_chai1(
     ligand_smiles = _sdf_to_smiles(ligand_file, logger)
     _write_chai_fasta(fasta_path, seq.sequence, ligand_smiles)
 
-    python_env_path = "/home/colao/miniconda3/envs/optobind-ai/bin/python"
+    python_env_path = sys.executable
     recycles = int(cfg.get("num_trunk_recycles", 1))
     samples  = int(cfg.get("num_diffn_samples", 1))
     use_esm  = bool(cfg.get("use_esm_embeddings", True))
