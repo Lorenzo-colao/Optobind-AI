@@ -212,8 +212,19 @@ def _run_chai1(
     use_esm  = bool(cfg.get("use_esm_embeddings", True))
 
     runner_py = f"""
-import pathlib
+import os
 import sys
+import pathlib
+
+# Forcer le backend non interactif pour éviter le conflit matplotlib_inline sous Jupyter/Colab
+os.environ["MPLBACKEND"] = "Agg"
+os.environ["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+except Exception:
+    pass
+
 try:
     from chai_lab.chai1 import run_inference
     cands = run_inference(
@@ -230,9 +241,13 @@ except Exception as exc:
     sys.exit(1)
 """
 
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+    env["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
+
     cmd = [python_env_path, "-c", runner_py]
     logger.debug("  [CHAI-1] Inférence native via chai_lab.chai1.run_inference()...")
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
 
     if result.returncode != 0:
         logger.warning("[CHAI-1] Non disponible ou a échoué :\n%s", textwrap.indent(result.stderr, "    "))
