@@ -405,34 +405,53 @@ def _compute_rmsd(
 ) -> float:
     """
     Calcule le RMSD Cα entre le squelette de référence (RFdiffusion)
-    et la structure prédite (AlphaFold).
+    et la structure prédite (AlphaFold / Chai-1).
 
-    Utilise la superposition Kabsch via Biopython.
+    Algorithme de Kabsch vectorisé direct, tolérant aux PDB/mmCIF non standards
+    (évite les plantages int('G2') du parser strict de Biopython).
     """
     if predicted_pdb is None or not predicted_pdb.exists():
         return float("inf")
 
     try:
-        from Bio.PDB import PDBParser, Superimposer
+        import numpy as np
 
-        parser = PDBParser(QUIET=True)
-        ref_struct  = parser.get_structure("ref",  str(reference_pdb))
-        pred_struct = parser.get_structure("pred", str(predicted_pdb))
+        def _get_ca(p: Path) -> np.ndarray:
+            coords = []
+            with p.open("r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if line.startswith("ATOM") and line[12:16].strip() == "CA":
+                        try:
+                            coords.append([float(line[30:38]), float(line[38:46]), float(line[46:54])])
+                        except (ValueError, IndexError):
+                            pass
+            return np.array(coords, dtype=np.float64)
 
-        ref_atoms  = [a for a in ref_struct.get_atoms()  if a.name == "CA"]
-        pred_atoms = [a for a in pred_struct.get_atoms() if a.name == "CA"]
+        ref_coords = _get_ca(reference_pdb)
+        pred_coords = _get_ca(predicted_pdb)
 
-        n = min(len(ref_atoms), len(pred_atoms))
+        n = min(len(ref_coords), len(pred_coords))
         if n == 0:
             return float("inf")
 
-        super_imposer = Superimposer()
-        super_imposer.set_atoms(ref_atoms[:n], pred_atoms[:n])
-        return round(float(super_imposer.rms), 4)
+        P = ref_coords[:n]
+        Q = pred_coords[:n]
 
-    except ImportError:
-        logger.warning("[RMSD] BioPython non disponible — RMSD non calculé.")
-        return float("inf")
+        # Centrage
+        P_cent = P - P.mean(axis=0)
+        Q_cent = Q - Q.mean(axis=0)
+
+        # Matrice de covariance & SVD
+        H = P_cent.T @ Q_cent
+        U, S, Vt = np.linalg.svd(H)
+        d = np.sign(np.linalg.det(Vt.T @ U.T))
+        R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+
+        # Superposition et RMSD
+        diff = (P_cent @ R.T) - Q_cent
+        rms = np.sqrt(np.mean(np.sum(diff**2, axis=-1)))
+        return round(float(rms), 4)
+
     except Exception as exc:
         logger.warning("[RMSD] Erreur de calcul : %s", exc)
         return float("inf")
@@ -445,51 +464,51 @@ def _count_clashes(
 ) -> int:
     """
     Détecte les clashes stériques entre atomes non liés.
-
-    Un clash est défini comme :
-        d(A, B) < vdw_cutoff × (r_vdw(A) + r_vdw(B))
-
-    Utilise une table de rayons de Van der Waals simplifiée (par élément).
+    Tolérant aux formats de colonnes PDB non standards (ligands, ions).
     """
     if pdb_path is None or not pdb_path.exists():
         return 0
 
-    # Rayons VdW simplifiés (Å) par élément
     VDW_RADII: dict[str, float] = {
         "H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52,
-        "S": 1.80, "P": 1.80, "ZN": 1.39, "FE": 1.40,
+        "S": 1.80, "P": 1.80, "ZN": 1.39, "FE": 1.40, "F": 1.47,
     }
     DEFAULT_RADIUS = 1.70
 
     try:
         import numpy as np
-        from Bio.PDB import PDBParser
 
-        parser = PDBParser(QUIET=True)
-        struct = parser.get_structure("clash", str(pdb_path))
-        atoms  = list(struct.get_atoms())
+        coords = []
+        radii = []
+        with pdb_path.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith(("ATOM", "HETATM")):
+                    try:
+                        x = float(line[30:38])
+                        y = float(line[38:46])
+                        z = float(line[46:54])
+                        elem = line[76:78].strip().upper() if len(line) >= 78 and line[76:78].strip() else line[12:14].strip().upper()
+                        elem = "".join(c for c in elem if c.isalpha())
+                        coords.append([x, y, z])
+                        radii.append(VDW_RADII.get(elem, DEFAULT_RADIUS))
+                    except (ValueError, IndexError):
+                        pass
 
-        coords  = np.array([a.coord for a in atoms], dtype=np.float32)
-        radii   = np.array(
-            [VDW_RADII.get(a.element.upper() if a.element else "C", DEFAULT_RADIUS)
-             for a in atoms],
-            dtype=np.float32,
-        )
+        if len(coords) < 2:
+            return 0
 
-        n = len(atoms)
+        coords_arr = np.array(coords, dtype=np.float32)
+        radii_arr  = np.array(radii, dtype=np.float32)
+
+        n = len(coords_arr)
         clash_count = 0
-
-        # Calcul O(n²) — acceptable pour des protéines de 70–100 résidus
         for i in range(n):
-            dists = np.linalg.norm(coords[i+1:] - coords[i], axis=1)
-            thresholds = vdw_cutoff * (radii[i] + radii[i+1:])
+            dists = np.linalg.norm(coords_arr[i+1:] - coords_arr[i], axis=1)
+            thresholds = vdw_cutoff * (radii_arr[i] + radii_arr[i+1:])
             clash_count += int(np.sum(dists < thresholds))
 
         return clash_count
 
-    except ImportError:
-        logger.warning("[CLASH] numpy/BioPython non disponibles — clashes non calculés.")
-        return 0
     except Exception as exc:
         logger.warning("[CLASH] Erreur de calcul : %s", exc)
         return 0
@@ -513,7 +532,10 @@ def _parse_plddt_from_pdb(pdb_path: Path | None, logger: logging.Logger) -> list
                 if not line.startswith("ATOM"):
                     continue
                 chain   = line[21]
-                res_seq = int(line[22:26].strip())
+                try:
+                    res_seq = int(line[22:26].strip())
+                except ValueError:
+                    res_seq = line[22:26].strip()
                 bfactor = float(line[60:66].strip())
                 key = (chain, res_seq)
                 residues.setdefault(key, []).append(bfactor)
