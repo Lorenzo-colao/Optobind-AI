@@ -264,6 +264,34 @@ for attempt in range(1, max_retries + 1):
             use_esm_embeddings={use_esm},
             low_memory=True,
         )
+
+        # ── 1. Exporter les scores pLDDT par résidu directement ─────────────
+        try:
+            import json as _json
+            plddt_arr = cands.plddt[0].cpu().numpy().flatten()
+            # Mise à l'échelle 0-100 si nécessaire
+            if plddt_arr.max() <= 1.0:
+                plddt_arr = plddt_arr * 100.0
+            plddt_list = [round(float(v), 2) for v in plddt_arr]
+            with open(out_p / "scores.json", "w", encoding="utf-8") as _f:
+                _json.dump({
+                    "per_residue_plddt": plddt_list,
+                    "mean_plddt": round(float(sum(plddt_list) / max(1, len(plddt_list))), 2),
+                }, _f)
+        except Exception as _e:
+            pass
+
+        # ── 2. Convertir pred.model_idx_0.cif en PDB standard via gemmi ─────
+        try:
+            import gemmi
+            cif_file = out_p / "pred.model_idx_0.cif"
+            if cif_file.exists():
+                doc = gemmi.cif.read_file(str(cif_file))
+                st = gemmi.make_structure_from_block(doc.sole_block())
+                st.write_minimal_pdb(str(out_p / "pred.pdb"))
+        except Exception as _e:
+            pass
+
         print("CHAI1_DONE")
         sys.exit(0)
     except Exception as exc:
@@ -289,7 +317,7 @@ for attempt in range(1, max_retries + 1):
         logger.warning("[CHAI-1] Non disponible ou a échoué :\n%s", textwrap.indent(result.stderr, "    "))
         return None, []
 
-    pred_pdb = _find_prediction_file(out_dir, ["*.pdb", "*.cif"])
+    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
     plddt    = _parse_chai_plddt(out_dir, logger)
     return pred_pdb, plddt
 
@@ -415,6 +443,21 @@ def _compute_rmsd(
 
     try:
         import numpy as np
+
+        # Si le fichier prédit est un mmCIF (.cif), s'assurer d'avoir sa version PDB convertie
+        if predicted_pdb.suffix.lower() in (".cif", ".mmcif"):
+            pdb_conv = predicted_pdb.parent / "pred.pdb"
+            if not pdb_conv.exists():
+                try:
+                    import gemmi
+                    doc = gemmi.cif.read_file(str(predicted_pdb))
+                    st = gemmi.make_structure_from_block(doc.sole_block())
+                    st.write_minimal_pdb(str(pdb_conv))
+                    predicted_pdb = pdb_conv
+                except Exception:
+                    pass
+            else:
+                predicted_pdb = pdb_conv
 
         def _get_ca(p: Path) -> np.ndarray:
             coords = []
@@ -546,21 +589,56 @@ def _parse_plddt_from_pdb(pdb_path: Path | None, logger: logging.Logger) -> list
 
 
 def _parse_chai_plddt(out_dir: Path, logger: logging.Logger) -> list[float]:
-    """Lit les scores pLDDT depuis les fichiers JSON de Chai-1."""
+    """Lit les scores pLDDT depuis les fichiers JSON, NPZ ou PDB/CIF de Chai-1."""
     import json as _json
 
-    for fname in ["scores.model_idx_0.json", "scores.json"]:
+    # 1. Vérifier si scores.json existe (généré par notre runner Chai-1)
+    for fname in ["scores.json", "scores.model_idx_0.json"]:
         score_file = out_dir / fname
         if score_file.exists():
             try:
                 data = _json.loads(score_file.read_text(encoding="utf-8"))
-                return [float(v) for v in data.get("per_residue_plddt", [])]
+                vals = [float(v) for v in data.get("per_residue_plddt", [])]
+                if vals:
+                    return vals
             except Exception as exc:
-                logger.warning("[CHAI pLDDT] %s", exc)
+                logger.warning("[CHAI pLDDT JSON] %s", exc)
 
-    # Fallback : lire depuis le PDB
-    pred_pdb = _find_prediction_file(out_dir, ["*.pdb"])
-    return _parse_plddt_from_pdb(pred_pdb, logger)
+    # 2. Vérifier les fichiers NPZ de Chai-1 (ex: scores.model_idx_0.npz)
+    for npz_path in sorted(out_dir.glob("scores*.npz")):
+        try:
+            import numpy as _np
+            npz_data = _np.load(npz_path)
+            for k in ("per_residue_plddt", "plddt", "lddt"):
+                if k in npz_data:
+                    arr = npz_data[k].flatten()
+                    if arr.max() <= 1.0:
+                        arr = arr * 100.0
+                    return [round(float(x), 2) for x in arr]
+        except Exception as exc:
+            logger.warning("[CHAI pLDDT NPZ] %s", exc)
+
+    # 3. Fallback : lire depuis le PDB
+    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb"])
+    if pred_pdb:
+        vals = _parse_plddt_from_pdb(pred_pdb, logger)
+        if vals:
+            return vals
+
+    # 4. Si seul le CIF est présent, le convertir via gemmi puis lire les B-factors
+    cif_file = _find_prediction_file(out_dir, ["*.cif"])
+    if cif_file:
+        try:
+            import gemmi
+            doc = gemmi.cif.read_file(str(cif_file))
+            st = gemmi.make_structure_from_block(doc.sole_block())
+            pdb_out = out_dir / "pred.pdb"
+            st.write_minimal_pdb(str(pdb_out))
+            return _parse_plddt_from_pdb(pdb_out, logger)
+        except Exception:
+            pass
+
+    return []
 
 
 def _sdf_to_smiles(ligand_file: Path, logger: logging.Logger) -> str:
