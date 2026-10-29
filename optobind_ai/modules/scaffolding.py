@@ -418,9 +418,6 @@ def _invoke_rfdiffusion(
 
     loading_event.set()
     ret = proc.wait()
-    # Fermer les barres proprement
-    if loading_bar is not None:
-        loading_bar.close()
     if pbar:
         if pbar.n < total_steps and ret == 0:
             pbar.update(total_steps - pbar.n)
