@@ -75,6 +75,19 @@ def run_alphafold(
 
     results: list[ValidationResult] = []
 
+    # ── Optimisation VRAM Chai-1 : Exécution en session persistante (Batch) ────
+    if backend == "chai-1" and not dry_run and sequences:
+        _run_chai1_batch(
+            sequences   = sequences,
+            ligand_file = ligand_file,
+            target_pdb  = target_pdb,
+            output_dir  = output_dir,
+            model_dir   = model_dir,
+            use_cuda    = use_cuda,
+            cfg         = cfg,
+            logger      = logger,
+        )
+
     try:
         from tqdm import tqdm
         seq_iter = tqdm(sequences, desc=f"  [3/3] Validation {backend.upper()}", unit="seq", dynamic_ncols=True)
@@ -185,6 +198,127 @@ def _predict_and_validate(
 # Backend Chai-1
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _run_chai1_batch(
+    sequences   : list[DesignedSequence],
+    ligand_file : Path,
+    target_pdb  : Path,
+    output_dir  : Path,
+    model_dir   : str,
+    use_cuda    : bool,
+    cfg         : dict[str, Any],
+    logger      : logging.Logger,
+) -> None:
+    """
+    Exécute l'inférence Chai-1 en une seule session persistante pour toutes
+    les séquences. Le modèle (~5.6 Go) est chargé UNE SEULE FOIS en VRAM
+    au lieu d'être rechargé pour chaque séquence.
+    """
+    fasta_dir = output_dir / "_chai_fastas"
+    fasta_dir.mkdir(parents=True, exist_ok=True)
+    ligand_smiles = _sdf_to_smiles(ligand_file, logger)
+
+    tasks = []
+    for seq in sequences:
+        fpath = fasta_dir / f"{seq.name}.fasta"
+        _write_chai_fasta(fpath, seq.sequence, ligand_smiles)
+        out_p = output_dir / seq.name
+        tasks.append({"name": seq.name, "fasta": str(fpath.resolve()), "out": str(out_p.resolve())})
+
+    import json as _json
+    tasks_file = fasta_dir / "batch_tasks.json"
+    tasks_file.write_text(_json.dumps(tasks), encoding="utf-8")
+
+    python_env_path = sys.executable
+    recycles = int(cfg.get("num_trunk_recycles", 1))
+    samples  = int(cfg.get("num_diffn_samples", 1))
+    use_esm  = bool(cfg.get("use_esm_embeddings", True))
+
+    batch_runner_py = f"""
+import os
+import sys
+import json
+import time
+import pathlib
+import shutil
+
+os.environ["MPLBACKEND"] = "Agg"
+os.environ["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+except Exception:
+    pass
+
+try:
+    import torch
+    # Activer TensorFloat-32 et semi-précision pour une inférence VRAM ultra-rapide
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    from chai_lab.chai1 import run_inference
+except Exception as exc:
+    print(f"CHAI1_INIT_FAIL: {{exc}}", file=sys.stderr)
+    sys.exit(1)
+
+with open('{tasks_file.as_posix()}', 'r', encoding='utf-8') as f:
+    task_list = json.load(f)
+
+print(f"CHAI1_SESSION_START: {{len(task_list)}} séquences à replier avec poids chauds en VRAM.")
+
+for i, t in enumerate(task_list, 1):
+    out_p = pathlib.Path(t['out'])
+    fasta_p = pathlib.Path(t['fasta'])
+    name = t['name']
+
+    # Nettoyer le répertoire de sortie pour Chai-1
+    if out_p.exists():
+        for item in out_p.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink(missing_ok=True)
+    out_p.mkdir(parents=True, exist_ok=True)
+
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"[CHAI-1 VRAM] ({{i}}/{{len(task_list)}}) Traitement {{name}}...")
+            cands = run_inference(
+                fasta_file=fasta_p,
+                output_dir=out_p,
+                num_trunk_recycles={recycles},
+                num_diffn_samples={samples},
+                use_esm_embeddings={use_esm},
+                low_memory=True,
+            )
+            print(f"CHAI1_ITEM_DONE: {{name}}")
+            break
+        except Exception as exc:
+            err_str = str(exc)
+            is_net_err = any(k in err_str.lower() for k in ("incompleteread", "connection", "timeout", "broken", "download", "http"))
+            if attempt < max_retries and is_net_err:
+                print(f"Tentative {{attempt}} interrompue (réseau). Reprise dans 5s...", file=sys.stderr)
+                time.sleep(5)
+                continue
+            print(f"CHAI1_ITEM_FAIL: {{name}} - {{exc}}", file=sys.stderr)
+            break
+
+print("CHAI1_SESSION_DONE")
+sys.exit(0)
+"""
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+    env["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
+
+    cmd = [python_env_path, "-c", batch_runner_py]
+    logger.info("  [CHAI-1 BATCH] Lancement de la session d'inférence persistante (modèle conservé en VRAM)...")
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    if res.returncode != 0:
+        logger.warning("  [CHAI-1 BATCH] La session globale a rencontré une anomalie :\n%s", textwrap.indent(res.stderr, "    "))
+    else:
+        logger.info("  [CHAI-1 BATCH] Repliement de toutes les structures terminé avec succès.")
+
+
 def _run_chai1(
     seq         : DesignedSequence,
     ligand_file : Path,
@@ -281,13 +415,17 @@ for attempt in range(1, max_retries + 1):
     env["MPLBACKEND"] = "Agg"
     env["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
 
-    cmd = [python_env_path, "-c", runner_py]
-    logger.debug("  [CHAI-1] Inférence native via chai_lab.chai1.run_inference()...")
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
-
-    if result.returncode != 0:
-        logger.warning("[CHAI-1] Non disponible ou a échoué :\n%s", textwrap.indent(result.stderr, "    "))
-        return None, []
+    # Si la prédiction existe déjà (générée par _run_chai1_batch), on évite de réexécuter
+    cif_file = _find_prediction_file(out_dir, ["*.cif"])
+    pdb_file = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb"])
+    if not cif_file and not pdb_file:
+        logger.debug("  [CHAI-1] Inférence unitaire pour %s...", seq.name)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+        if result.returncode != 0:
+            logger.warning("[CHAI-1] Non disponible ou a échoué :\n%s", textwrap.indent(result.stderr, "    "))
+            return None, []
+    else:
+        logger.debug("  [CHAI-1] Prédiction déjà disponible via la session batch pour %s", seq.name)
 
     # ── Conversion du mmCIF en PDB standard via gemmi ─────────────────────────
     cif_file = _find_prediction_file(out_dir, ["*.cif"])
@@ -507,6 +645,9 @@ def _count_clashes(
 
         coords = []
         radii = []
+        residues = []
+        chains = []
+
         with pdb_path.open("r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 if line.startswith(("ATOM", "HETATM")):
@@ -516,8 +657,13 @@ def _count_clashes(
                         z = float(line[46:54])
                         elem = line[76:78].strip().upper() if len(line) >= 78 and line[76:78].strip() else line[12:14].strip().upper()
                         elem = "".join(c for c in elem if c.isalpha())
+                        ch = line[21]
+                        r_seq = line[22:26].strip()
+
                         coords.append([x, y, z])
                         radii.append(VDW_RADII.get(elem, DEFAULT_RADIUS))
+                        chains.append(ch)
+                        residues.append(r_seq)
                     except (ValueError, IndexError):
                         pass
 
@@ -530,9 +676,25 @@ def _count_clashes(
         n = len(coords_arr)
         clash_count = 0
         for i in range(n):
+            ch_i = chains[i]
+            res_i = residues[i]
             dists = np.linalg.norm(coords_arr[i+1:] - coords_arr[i], axis=1)
             thresholds = vdw_cutoff * (radii_arr[i] + radii_arr[i+1:])
-            clash_count += int(np.sum(dists < thresholds))
+
+            # Ne tester que les atomes qui violent le seuil de Van der Waals
+            clash_indices = np.where(dists < thresholds)[0]
+            for idx in clash_indices:
+                j = i + 1 + idx
+                ch_j = chains[j]
+                res_j = residues[j]
+                # Exclure les liaisons chimiques intra-résidu ou le pont peptidique adjacent (|i - j| <= 1)
+                try:
+                    if ch_i == ch_j and abs(int(res_i) - int(res_j)) <= 1:
+                        continue
+                except ValueError:
+                    if ch_i == ch_j and res_i == res_j:
+                        continue
+                clash_count += 1
 
         return clash_count
 

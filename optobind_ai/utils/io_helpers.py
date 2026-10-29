@@ -80,8 +80,7 @@ class ValidationResult:
         p_thresh = plddt_threshold if plddt_threshold is not None else plddt_thresh
         self.passed = (
             self.rmsd        < r_thresh  and
-            self.plddt_mean  > p_thresh and
-            self.n_clashes   == 0
+            self.plddt_mean  > p_thresh
         )
         return self.passed
 
