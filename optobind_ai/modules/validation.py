@@ -309,6 +309,26 @@ sys.exit(0)
     env = os.environ.copy()
     env["MPLBACKEND"] = "Agg"
     env["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
+    for cand_dir in [
+        os.environ.get("CHAI_DOWNLOADS_DIR", ""),
+        "/content/chai_ssd",
+        "/content/drive/MyDrive/optobind_weights_cache/chai",
+        str(Path.home() / ".cache" / "chai"),
+    ]:
+        if cand_dir and Path(cand_dir).exists():
+            env["CHAI_DOWNLOADS_DIR"] = str(cand_dir)
+            break
+
+    # Détecter le répertoire de poids Chai-1 (Drive, SSD ou variable d'environnement)
+    for cand_dir in [
+        os.environ.get("CHAI_DOWNLOADS_DIR", ""),
+        "/content/chai_ssd",
+        "/content/drive/MyDrive/optobind_weights_cache/chai",
+        str(Path.home() / ".cache" / "chai"),
+    ]:
+        if cand_dir and Path(cand_dir).exists():
+            env["CHAI_DOWNLOADS_DIR"] = str(cand_dir)
+            break
 
     cmd = [python_env_path, "-c", batch_runner_py]
     logger.info("  [CHAI-1 BATCH] Lancement de la session d'inférence persistante (modèle conservé en VRAM)...")
@@ -414,6 +434,15 @@ for attempt in range(1, max_retries + 1):
     env = os.environ.copy()
     env["MPLBACKEND"] = "Agg"
     env["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
+    for cand_dir in [
+        os.environ.get("CHAI_DOWNLOADS_DIR", ""),
+        "/content/chai_ssd",
+        "/content/drive/MyDrive/optobind_weights_cache/chai",
+        str(Path.home() / ".cache" / "chai"),
+    ]:
+        if cand_dir and Path(cand_dir).exists():
+            env["CHAI_DOWNLOADS_DIR"] = str(cand_dir)
+            break
 
     # Si la prédiction existe déjà (générée par _run_chai1_batch), on évite de réexécuter
     cif_file = _find_prediction_file(out_dir, ["*.cif"])
