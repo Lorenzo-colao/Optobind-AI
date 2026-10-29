@@ -190,7 +190,7 @@ def patch_contigs(rf_dir: Path) -> bool:
 
     try:
         text = contigs_path.read_text(encoding="utf-8")
-        if "re-fusionne en un seul bloc contig" in text:
+        if "fusionne en un seul bloc contig" in text:
             return True  # Déjà patché
 
         target = """            if isinstance(contigs, str):
@@ -401,6 +401,46 @@ def patch_torchdata_stub() -> bool:
     return True
 
 
+def patch_fast_inference(rf_dir: Path) -> bool:
+    """Active TensorFloat-32 et optimise l'I/O disque dans run_inference.py."""
+    inference_path = rf_dir / "run_inference.py"
+    if not inference_path.is_file():
+        return False
+    try:
+        text = inference_path.read_text(encoding="utf-8")
+        changed = False
+        if "torch.backends.cuda.matmul.allow_tf32" not in text and "import torch" in text:
+            tf32_code = """import torch
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    try:
+        torch.set_float32_matmul_precision('high')
+    except Exception:
+        pass
+"""
+            text = text.replace("import torch", tf32_code, 1)
+            changed = True
+
+        if "RFDIFFUSION_SKIP_TRAJ" not in text and "traj_prefix = " in text:
+            old_traj = "traj_prefix = os.path.dirname(out_prefix)+'/traj/'+os.path.basename(out_prefix)"
+            new_traj = """if os.environ.get("RFDIFFUSION_SKIP_TRAJ", "0") == "1":
+        log.info(f"design : {des_path}")
+        return
+    traj_prefix = os.path.dirname(out_prefix)+'/traj/'+os.path.basename(out_prefix)"""
+            if old_traj in text:
+                text = text.replace(old_traj, new_traj, 1)
+                changed = True
+
+        if changed:
+            inference_path.write_text(text, encoding="utf-8")
+        return True
+    except Exception as exc:
+        logger.warning(f"Erreur lors du patch fast_inference : {exc}")
+        return False
+
+
 def patch_all_rfdiffusion(rf_dir: Path | str | None = None) -> bool:
     """
     Applique tous les patches requis sur le dossier RFdiffusion spécifié ou détecté.
@@ -432,5 +472,6 @@ def patch_all_rfdiffusion(rf_dir: Path | str | None = None) -> bool:
     ok3 = patch_contigs(rf_path)
     ok4 = patch_inference_utils(rf_path)
     ok5 = patch_diffusion(rf_path)
+    ok6 = patch_fast_inference(rf_path)
 
-    return all([ok1, ok2, ok3, ok4, ok5])
+    return all([ok1, ok2, ok3, ok4, ok5, ok6])

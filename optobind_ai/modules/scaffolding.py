@@ -311,8 +311,11 @@ def _invoke_rfdiffusion(
 
     logger.debug("  [CMD] %s", " ".join(cmd))
 
-    # Injection du PYTHONPATH avec la racine du dépôt All-Atom et son sous-module rf2aa
+    # Injection du PYTHONPATH et activations des optimisations matérielles Tensor Cores
     env = os.environ.copy()
+    env["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "1"
+    env["NVIDIA_TF32_OVERRIDE"] = "1"
+    env["RFDIFFUSION_SKIP_TRAJ"] = "1"
     rf2aa_dir = rfdiff_root / "lib" / "rf2aa"
     current_pp = env.get("PYTHONPATH", "")
     paths = [str(rfdiff_root), str(rf2aa_dir)]
