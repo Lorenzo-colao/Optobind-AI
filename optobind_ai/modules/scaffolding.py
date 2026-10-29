@@ -289,7 +289,7 @@ def _invoke_rfdiffusion(
     # Commande native pour rf_diffusion_all_atom
     # contigmap.contigs=[...] — les crochets font partie de la valeur Hydra (liste YAML)
     cmd = [
-        sys.executable, str(inference_script),
+        sys.executable, "-u", str(inference_script),
         f"inference.input_pdb={input_pdb_val}",
         f"inference.output_prefix={output_pfx_val}",
         f"inference.num_designs={n_variants}",
@@ -349,23 +349,28 @@ def _invoke_rfdiffusion(
         cwd=str(rfdiff_root),
     )
 
-    # ── Barre de chargement des poids (phase d'initialisation indéterminée) ──
-    if has_tqdm:
-        from tqdm import tqdm as _tqdm
-        loading_bar = _tqdm(
-            total=0,
-            desc="  ⏳ Chargement modèle & poids (~3.7 GB)",
-            bar_format="{desc}  {elapsed}s écoulées",
-            dynamic_ncols=True,
-        )
-    else:
-        loading_bar = None
+    # ── Notification en temps réel du chargement en mémoire GPU ──────────────
+    loading_event = threading.Event()
+    t_start = _time.time()
+
+    def _loading_heartbeat():
+        step = 0
+        while not loading_event.wait(4.0):
+            step += 1
+            elapsed = int(_time.time() - t_start)
+            logger.info("  ⏳ Chargement RoseTTAFold All-Atom en VRAM... (%ds)", elapsed)
+
+    hb_thread = threading.Thread(target=_loading_heartbeat, daemon=True)
+    logger.info("  ⏳ Initialisation des tenseurs et chargement du modèle en VRAM...")
+    hb_thread.start()
 
     total_steps = n_variants * num_steps
     pbar = None           # Ouvert seulement quand la diffusion commence
     diffusion_started = False
 
     current_design = 0
+    last_logged_ts = -1
+
     if proc.stdout:
         for line in iter(proc.stdout.readline, ""):
             stdout_lines.append(line)
@@ -374,16 +379,22 @@ def _invoke_rfdiffusion(
             m_des = re_design.search(line)
             if m_des:
                 current_design = int(m_des.group(1)) + 1
+                if not diffusion_started:
+                    diffusion_started = True
+                    loading_event.set()
+                    elapsed = _time.time() - t_start
+                    logger.info("  ✓ Modèle RoseTTAFold All-Atom prêt en VRAM (%.1fs) — Démarrage du scaffolding !", elapsed)
+                logger.info("  ▸ Démarrage du design [%d/%d]...", current_design, n_variants)
 
             # Détection premier timestep → fermer chargement, ouvrir diffusion
             m_ts = re_timestep.search(line)
             if m_ts and not diffusion_started:
                 diffusion_started = True
-                if loading_bar is not None:
-                    loading_bar.set_description("  ✓ Modèle chargé")
-                    loading_bar.close()
-                    loading_bar = None
+                loading_event.set()
+                elapsed = _time.time() - t_start
+                logger.info("  ✓ Modèle RoseTTAFold All-Atom prêt en VRAM (%.1fs) — Démarrage de la diffusion inverse !", elapsed)
                 if has_tqdm:
+                    from tqdm import tqdm as _tqdm
                     pbar = _tqdm(
                         total=total_steps,
                         desc=f"  [1/3] RFdiffusion [Variant 1/{n_variants}]",
@@ -392,21 +403,20 @@ def _invoke_rfdiffusion(
                     )
 
             if m_ts:
+                ts = int(m_ts.group(1))
                 if pbar:
                     pbar.update(1)
-                    pbar.set_postfix_str(f"t={m_ts.group(1)}")
-                if pbar and m_des:
-                    pbar.set_description(f"  [1/3] RFdiffusion [Variant {current_design}/{n_variants}]")
-
-            # Mise à jour de la barre de chargement (checkpoint)
-            if not diffusion_started and loading_bar is not None:
-                for kw in ("checkpoint", "weight", "poids", "Loading", "Reading", "model"):
-                    if kw.lower() in line.lower():
-                        loading_bar.set_description(f"  ⏳ {line.strip()[:60]}")
-                        break
+                    pbar.set_postfix_str(f"t={ts}")
+                # Affichage régulier dans les logs texte (toutes les 5 étapes)
+                if ts != last_logged_ts and (ts % 5 == 0 or ts == num_steps):
+                    last_logged_ts = ts
+                    step_done = max(1, num_steps - ts)
+                    pct = int(step_done / num_steps * 100)
+                    logger.info("     ▸ Variant %d/%d : pas %d/%d (%d%%) [t=%d]", current_design or 1, n_variants, step_done, num_steps, pct, ts)
 
         proc.stdout.close()
 
+    loading_event.set()
     ret = proc.wait()
     # Fermer les barres proprement
     if loading_bar is not None:
