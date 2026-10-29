@@ -264,34 +264,6 @@ for attempt in range(1, max_retries + 1):
             use_esm_embeddings={use_esm},
             low_memory=True,
         )
-
-        # ── 1. Exporter les scores pLDDT par résidu directement ─────────────
-        try:
-            import json as _json
-            plddt_arr = cands.plddt[0].cpu().numpy().flatten()
-            # Mise à l'échelle 0-100 si nécessaire
-            if plddt_arr.max() <= 1.0:
-                plddt_arr = plddt_arr * 100.0
-            plddt_list = [round(float(v), 2) for v in plddt_arr]
-            with open(out_p / "scores.json", "w", encoding="utf-8") as _f:
-                _json.dump({
-                    "per_residue_plddt": plddt_list,
-                    "mean_plddt": round(float(sum(plddt_list) / max(1, len(plddt_list))), 2),
-                }, _f)
-        except Exception as _e:
-            pass
-
-        # ── 2. Convertir pred.model_idx_0.cif en PDB standard via gemmi ─────
-        try:
-            import gemmi
-            cif_file = out_p / "pred.model_idx_0.cif"
-            if cif_file.exists():
-                doc = gemmi.cif.read_file(str(cif_file))
-                st = gemmi.make_structure_from_block(doc.sole_block())
-                st.write_minimal_pdb(str(out_p / "pred.pdb"))
-        except Exception as _e:
-            pass
-
         print("CHAI1_DONE")
         sys.exit(0)
     except Exception as exc:
@@ -316,6 +288,18 @@ for attempt in range(1, max_retries + 1):
     if result.returncode != 0:
         logger.warning("[CHAI-1] Non disponible ou a échoué :\n%s", textwrap.indent(result.stderr, "    "))
         return None, []
+
+    # ── Conversion du mmCIF en PDB standard via gemmi ─────────────────────────
+    cif_file = _find_prediction_file(out_dir, ["*.cif"])
+    if cif_file:
+        try:
+            import gemmi
+            doc = gemmi.cif.read_file(str(cif_file))
+            st = gemmi.make_structure_from_block(doc.sole_block())
+            pdb_out = out_dir / "pred.pdb"
+            st.write_minimal_pdb(str(pdb_out))
+        except Exception as exc:
+            logger.debug("[GEMMI] Conversion CIF vers PDB : %s", exc)
 
     pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
     plddt    = _parse_chai_plddt(out_dir, logger)
