@@ -69,6 +69,8 @@ def run_proteinmpnn(
     model_weights    = cfg.get("model_weights",       "")
     use_cuda         = cfg.get("use_cuda",            True)
     seed             = cfg.get("seed",                42)
+    fix_motif        = cfg.get("fix_motif",           True)
+    contigs          = cfg.get("contigs",             "")
 
     logger.info("  ▸ Température d'échantillonnage : %.2f", sampling_temp)
     logger.info("  ▸ Séquences par squelette       : %d", num_seq)
@@ -101,6 +103,8 @@ def run_proteinmpnn(
                 use_cuda       = use_cuda,
                 seed           = seed,
                 logger         = logger,
+                fixed_positions = (motif_positions_from_contigs(contigs, scaffold.n_residues, logger)
+                                   if fix_motif else []),
             )
 
         for s in seqs:
@@ -116,6 +120,50 @@ def run_proteinmpnn(
 # ──────────────────────────────────────────────────────────────────────────────
 # Invocation ProteinMPNN
 # ──────────────────────────────────────────────────────────────────────────────
+
+def motif_positions_from_contigs(
+    contigs: str, n_residues: int, logger: logging.Logger | None = None,
+) -> list[int]:
+    """
+    Déduit les positions (1-indexées) du motif à conserver depuis les contigs
+    RFdiffusion, quelle que soit la cible.
+
+    Segments avec lettre de chaîne (``A1-4``, ``B15``) = motif fixé ;
+    segments numériques (``70-100``) = résidus générés de novo (libres).
+    Si un seul segment libre précède un motif, sa longueur réelle est déduite
+    de la taille du scaffold.
+    """
+    import re
+    if not contigs:
+        return []
+    segs = [s for s in re.split(r"[,/\s]+", contigs.strip("[]'\" ")) if s and s != "0"]
+    parsed = []  # (is_motif, length)
+    for s in segs:
+        m = re.fullmatch(r"([A-Za-z])(\d+)(?:-(\d+))?", s)
+        if m:
+            a = int(m.group(2)); b = int(m.group(3) or a)
+            parsed.append((True, b - a + 1))
+            continue
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", s)
+        if m:
+            parsed.append((False, None))
+    motif_total = sum(n for is_m, n in parsed if is_m)
+    n_free = sum(1 for is_m, _ in parsed if not is_m)
+    free_len = max(0, n_residues - motif_total) if n_free == 1 else None
+
+    positions, cursor = [], 0
+    for is_motif, n in parsed:
+        if is_motif:
+            positions += list(range(cursor + 1, cursor + n + 1))
+            cursor += n
+        elif free_len is not None:
+            cursor += free_len
+        else:
+            if logger:
+                logger.warning("  [MOTIF] Plusieurs segments libres : positions du motif non déterminables.")
+            return []
+    return positions
+
 
 def _find_or_clone_proteinmpnn(logger: logging.Logger) -> tuple[Path, Path]:
     """Trouve ou clone automatiquement ProteinMPNN et retourne (protein_mpnn_run.py, parse_chains.py)."""
@@ -151,6 +199,7 @@ def _invoke_proteinmpnn(
     use_cuda       : bool,
     seed           : int,
     logger         : logging.Logger,
+    fixed_positions: list[int] | None = None,
 ) -> list[DesignedSequence]:
     """Lance ProteinMPNN via subprocess et parse les FASTA de sortie."""
 
@@ -173,6 +222,21 @@ def _invoke_proteinmpnn(
         "--batch_size",          "1",
         "--seed",                str(seed),
     ]
+
+    # ── Verrouillage générique des résidus du motif (contigs « A… ») ──────────
+    if fixed_positions:
+        chain_id = "A"
+        for line in Path(scaffold.pdb_path).read_text(errors="ignore").splitlines():
+            if line.startswith("ATOM"):
+                chain_id = line[21].strip() or "A"
+                break
+        fixed_jsonl = tmp_dir / "fixed_positions.jsonl"
+        fixed_jsonl.write_text(
+            json.dumps({Path(scaffold.pdb_path).stem: {chain_id: fixed_positions}}) + "\n",
+            encoding="utf-8",
+        )
+        cmd += ["--fixed_positions_jsonl", str(fixed_jsonl)]
+        logger.info("  ▸ Résidus du motif verrouillés (chaîne %s) : %s", chain_id, fixed_positions)
 
     import torch
     if use_cuda and not torch.cuda.is_available():

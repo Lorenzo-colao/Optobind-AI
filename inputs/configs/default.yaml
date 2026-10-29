@@ -44,6 +44,9 @@ proteinmpnn:
   backbone_noise    : 0.00         # Bruit ajouté au squelette (Å)
   use_cuda          : true
   seed              : 42
+  # Verrouille automatiquement les résidus du motif (segments "A1-4" des contigs)
+  # pour toute cible : ProteinMPNN ne les mute pas.
+  fix_motif         : true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module 3 — Validation structurale

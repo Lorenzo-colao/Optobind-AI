@@ -76,7 +76,7 @@ if sys.platform == "win32" and "--wsl-passthrough" not in sys.argv:
 from optobind_ai.utils.config     import load_config, validate_config
 from optobind_ai.utils.logger     import setup_logger
 from optobind_ai.utils.io_helpers import ensure_output_dirs, copy_inputs_snapshot
-from optobind_ai.modules.scaffolding   import run_rfdiffusion
+from optobind_ai.modules.scaffolding   import run_rfdiffusion, _build_contigs
 from optobind_ai.modules.sequencing    import run_proteinmpnn
 from optobind_ai.modules.validation    import run_alphafold
 from optobind_ai.modules.reporting     import build_report, print_summary
@@ -227,7 +227,8 @@ def main() -> int:
         output_dir  = out_dirs["fasta"],
         ph          = ph_target,
         dry_run     = args.dry_run,
-        cfg         = cfg.get("proteinmpnn", {}),
+        cfg         = {**cfg.get("proteinmpnn", {}),
+                       "contigs": _build_contigs(cfg.get("rfdiffusion", {}), backbone_len)},
         logger      = logger,
     )
     logger.info("└─ Séquençage terminé en %.1fs — %d séquences optimisées.", time.time() - t0, len(sequences))
