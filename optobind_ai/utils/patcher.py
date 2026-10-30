@@ -419,6 +419,8 @@ if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
     except Exception:
         pass
+if hasattr(torch, "inference_mode"):
+    torch.no_grad = torch.inference_mode
 """
             text = text.replace("import torch", tf32_code, 1)
             changed = True
@@ -435,6 +437,18 @@ if torch.cuda.is_available():
 
         if changed:
             inference_path.write_text(text, encoding="utf-8")
+
+        # Patcher également model_runners.py pour forcer inference_mode
+        mr_path = rf_dir / "inference" / "model_runners.py"
+        if mr_path.is_file():
+            mr_text = mr_path.read_text(encoding="utf-8")
+            if "with torch.no_grad():" in mr_text:
+                mr_text = mr_text.replace(
+                    "with torch.no_grad():",
+                    "with (torch.inference_mode() if hasattr(torch, 'inference_mode') else torch.no_grad()):"
+                )
+                mr_path.write_text(mr_text, encoding="utf-8")
+
         return True
     except Exception as exc:
         logger.warning(f"Erreur lors du patch fast_inference : {exc}")

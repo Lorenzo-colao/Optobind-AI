@@ -30,6 +30,8 @@ rfdiffusion:
   contigs           : "A1-4/70-100"
   # Résidus chauds (hotspots) imposant la poche de liaison (ex: A12+A34)
   hotspot_residues  : []
+  auto_hotspots     : true
+  num_workers       : 2            # Parallélisme multi-scaffolds (2x plus rapide sur GPU)
   use_cuda          : true
   seed              : 42
 

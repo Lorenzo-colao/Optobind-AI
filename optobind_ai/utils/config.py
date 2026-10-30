@@ -31,6 +31,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "noise_scale_frame"   : 1.0,
         "contigs"             : "A1-5/0 70-100",
         "hotspot_residues"    : [],
+        "auto_hotspots"       : True,
+        "num_workers"         : 2,
         "use_cuda"            : True,
         "seed"                : 42,
     },

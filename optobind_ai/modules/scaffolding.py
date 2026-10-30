@@ -92,15 +92,30 @@ def run_rfdiffusion(
 
     # ── Préparation des paramètres ────────────────────────────────────────────
     contigs   = _build_contigs(cfg, backbone_len)
-    hotspots  = cfg.get("hotspot_residues", [])
+    hotspots  = list(cfg.get("hotspot_residues", []))
+    auto_hotspots = cfg.get("auto_hotspots", True)
     num_steps = cfg.get("num_steps", 200)
     seed      = cfg.get("seed", 42)
     use_cuda  = cfg.get("use_cuda", True)
+    num_workers = int(cfg.get("num_workers", 2))
+
+    # Auto-détection des hotspots depuis contigs si binder design (/0 ou /)
+    if not hotspots and auto_hotspots and ("/" in contigs or "/0" in contigs):
+        import re
+        target_part = contigs.split("/")[0]
+        m = re.findall(r"([A-Za-z])(\d+)(?:-(\d+))?", target_part)
+        for ch, s_str, e_str in m:
+            s_idx = int(s_str)
+            e_idx = int(e_str) if e_str else s_idx
+            for r in range(s_idx, e_idx + 1):
+                hotspots.append(f"{ch}{r}")
+
+    effective_workers = min(num_workers, n_variants) if use_cuda else 1
 
     logger.info("  ▸ Contigs        : %s", contigs)
-    logger.info("  ▸ Hotspots       : %s", hotspots or "aucun")
-    logger.info("  ▸ Steps          : %d  |  Seed : %d  |  CUDA : %s",
-                num_steps, seed, use_cuda)
+    logger.info("  ▸ Hotspots       : %s", ", ".join(hotspots) if hotspots else "aucun (verrouillage direct via contigs)")
+    logger.info("  ▸ Steps          : %d  |  Seed : %d  |  CUDA : %s  |  Workers : %d",
+                num_steps, seed, use_cuda, effective_workers)
 
     scaffolds: list[Scaffold] = []
 
@@ -121,6 +136,7 @@ def run_rfdiffusion(
             model_weights = cfg.get("model_weights", ""),
             run_id      = run_id,
             logger      = logger,
+            num_workers = effective_workers,
         )
 
     for s in scaffolds:
@@ -219,6 +235,29 @@ def _detect_ligand_name(pdb_path: Path, ligand_file: Path) -> str:
     return stem[:3].upper() if len(stem) >= 3 else stem
 
 
+def _partition_variants(n_variants: int, num_workers: int) -> list[tuple[int, int]]:
+    """
+    Retourne la liste de (design_startnum, num_designs) pour chaque worker.
+    Exemples :
+        n=2, w=2 -> [(0, 1), (1, 1)]
+        n=4, w=2 -> [(0, 2), (2, 2)]
+        n=3, w=2 -> [(0, 2), (2, 1)]
+        n=1, w=2 -> [(0, 1)]
+    """
+    num_workers = max(1, min(num_workers, n_variants))
+    base = n_variants // num_workers
+    remainder = n_variants % num_workers
+
+    partitions = []
+    start = 0
+    for i in range(num_workers):
+        count = base + (1 if i < remainder else 0)
+        if count > 0:
+            partitions.append((start, count))
+            start += count
+    return partitions
+
+
 def _invoke_rfdiffusion(
     target_pdb    : Path,
     ligand_file   : Path,
@@ -232,8 +271,9 @@ def _invoke_rfdiffusion(
     model_weights : str,
     run_id        : str,
     logger        : logging.Logger,
+    num_workers   : int = 1,
 ) -> list[Scaffold]:
-    """Lance RFdiffusion All-Atom via subprocess."""
+    """Lance RFdiffusion All-Atom via subprocess avec support multi-workers."""
 
     inference_script, rfdiff_root = _find_or_clone_rfdiffusion(logger)
     _patch_se3_pooling()
@@ -246,6 +286,10 @@ def _invoke_rfdiffusion(
     import os
     import sys as _sys
     import platform
+    import queue
+    import re
+    import threading
+    import time as _time
 
     def _safe_path(p: Path) -> str:
         """
@@ -277,39 +321,8 @@ def _invoke_rfdiffusion(
 
     # Détecter si le ligand organique est présent dans le PDB cible
     lig_code = _detect_ligand_name(target_pdb, ligand_file)
-
-    # Format des arguments Hydra : chaque argument est un élément séparé de la liste.
-    # subprocess ne passe PAS par un shell, donc les guillemets internes n'aident pas.
-    # Hydra accepte les espaces dans les valeurs si l'argument est un élément de liste entier.
-    # Pour les chemins avec espaces, on utilise la syntaxe Hydra avec guillemets YAML : '+key="val"'
-    # ou on échappe via le lien symbolique /tmp (Linux/WSL) déjà géré dans _safe_path.
     input_pdb_val  = safe_target
     output_pfx_val = safe_prefix
-
-    # Commande native pour rf_diffusion_all_atom
-    # contigmap.contigs=[...] — les crochets font partie de la valeur Hydra (liste YAML)
-    cmd = [
-        sys.executable, "-u", str(inference_script),
-        f"inference.input_pdb={input_pdb_val}",
-        f"inference.output_prefix={output_pfx_val}",
-        f"inference.num_designs={n_variants}",
-        f"diffuser.T={num_steps}",
-        f"contigmap.contigs=['{contigs}']",
-        "inference.deterministic=True",
-    ]
-
-    if safe_weights:
-        cmd.append(f"inference.ckpt_path={safe_weights}")
-
-    # N'ajouter inference.ligand que si un ligand organique est présent dans le PDB
-    if lig_code:
-        cmd.append(f"inference.ligand={lig_code}")
-
-    if hotspots:
-        hs_str = "+".join(hotspots)
-        cmd.append(f"ppi.hotspot_res=[{hs_str}]")
-
-    logger.debug("  [CMD] %s", " ".join(cmd))
 
     # Injection du PYTHONPATH et activations des optimisations matérielles Tensor Cores
     env = os.environ.copy()
@@ -323,31 +336,31 @@ def _invoke_rfdiffusion(
         paths.append(current_pp)
     env["PYTHONPATH"] = os.pathsep.join(paths)
 
-    try:
-        from tqdm import tqdm
-        has_tqdm = True
-    except ImportError:
-        has_tqdm = False
+    partitions = _partition_variants(n_variants, num_workers if use_cuda else 1)
+    n_active_workers = len(partitions)
 
-    import re
-    import threading
-    import time as _time
+    def _build_worker_cmd(start_num: int, count: int) -> list[str]:
+        cmd = [
+            sys.executable, "-u", str(inference_script),
+            f"inference.input_pdb={input_pdb_val}",
+            f"inference.output_prefix={output_pfx_val}",
+            f"inference.num_designs={count}",
+            f"inference.design_startnum={start_num}",
+            f"diffuser.T={num_steps}",
+            f"contigmap.contigs=['{contigs}']",
+            "inference.deterministic=True",
+        ]
+        if safe_weights:
+            cmd.append(f"inference.ckpt_path={safe_weights}")
+        if lig_code:
+            cmd.append(f"inference.ligand={lig_code}")
+        if hotspots:
+            hs_str = ",".join(hotspots)
+            cmd.append(f"ppi.hotspot_res=[{hs_str}]")
+        return cmd
 
     re_timestep = re.compile(r"Timestep\s+(\d+)")
     re_design   = re.compile(r"making design\s+(\d+)\s+of\s+(\d+):(\d+)", re.IGNORECASE)
-
-    stdout_lines = []
-    stderr_lines = []
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=env,
-        cwd=str(rfdiff_root),
-    )
 
     # ── Notification en temps réel du chargement en mémoire GPU ──────────────
     loading_event = threading.Event()
@@ -364,72 +377,109 @@ def _invoke_rfdiffusion(
     logger.info("  ⏳ Initialisation des tenseurs et chargement du modèle en VRAM...")
     hb_thread.start()
 
-    total_steps = n_variants * num_steps
-    pbar = None           # Ouvert seulement quand la diffusion commence
-    diffusion_started = False
+    if n_active_workers > 1:
+        logger.info("  ⚡ Parallélisme actif : lancement de %d workers RFdiffusion concurrents sur GPU", n_active_workers)
 
-    current_design = 0
-    last_logged_ts = -1
+    procs: list[subprocess.Popen] = []
+    worker_stdout_lines: list[list[str]] = [[] for _ in range(n_active_workers)]
+    log_queue: queue.Queue = queue.Queue()
 
-    if proc.stdout:
-        for line in iter(proc.stdout.readline, ""):
-            stdout_lines.append(line)
+    def _reader(w_idx: int, proc_obj: subprocess.Popen, out_lines: list[str]):
+        if proc_obj.stdout:
+            for line in iter(proc_obj.stdout.readline, ""):
+                out_lines.append(line)
+                log_queue.put((w_idx, line))
+            proc_obj.stdout.close()
+        log_queue.put((w_idx, None))
 
-            # Détection démarrage design
-            m_des = re_design.search(line)
-            if m_des:
-                current_design = int(m_des.group(1)) + 1
-                if not diffusion_started:
-                    diffusion_started = True
-                    loading_event.set()
-                    elapsed = _time.time() - t_start
-                    logger.info("  ✓ Modèle RoseTTAFold All-Atom prêt en VRAM (%.1fs) — Démarrage du scaffolding !", elapsed)
-                logger.info("  ▸ Démarrage du design [%d/%d]...", current_design, n_variants)
+    for w_idx, (start_num, count) in enumerate(partitions):
+        w_cmd = _build_worker_cmd(start_num, count)
+        logger.debug("  [CMD Worker %d] %s", w_idx + 1, " ".join(w_cmd))
+        proc = subprocess.Popen(
+            w_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+            cwd=str(rfdiff_root),
+        )
+        procs.append(proc)
+        th = threading.Thread(
+            target=_reader,
+            args=(w_idx, proc, worker_stdout_lines[w_idx]),
+            daemon=True,
+        )
+        th.start()
 
-            # Détection premier timestep → fermer chargement, ouvrir diffusion
-            m_ts = re_timestep.search(line)
-            if m_ts and not diffusion_started:
-                diffusion_started = True
+    active_count = n_active_workers
+    worker_last_ts = {w: -1 for w in range(n_active_workers)}
+    worker_ready = {w: False for w in range(n_active_workers)}
+    worker_cur_des = {w: 1 for w in range(n_active_workers)}
+
+    while active_count > 0:
+        try:
+            item = log_queue.get(timeout=0.2)
+        except queue.Empty:
+            continue
+
+        w_idx, line = item
+        if line is None:
+            active_count -= 1
+            continue
+
+        m_des = re_design.search(line)
+        if m_des:
+            worker_cur_des[w_idx] = int(m_des.group(1)) + 1
+            if not worker_ready[w_idx]:
+                worker_ready[w_idx] = True
                 loading_event.set()
                 elapsed = _time.time() - t_start
-                logger.info("  ✓ Modèle RoseTTAFold All-Atom prêt en VRAM (%.1fs) — Démarrage de la diffusion inverse !", elapsed)
-                if has_tqdm:
-                    from tqdm import tqdm as _tqdm
-                    pbar = _tqdm(
-                        total=total_steps,
-                        desc=f"  [1/3] RFdiffusion [Variant 1/{n_variants}]",
-                        unit="step",
-                        dynamic_ncols=True,
-                    )
+                if n_active_workers > 1:
+                    logger.info("  ✓ Worker %d prêt en VRAM (%.1fs) — Démarrage du design [%d] !",
+                                w_idx + 1, elapsed, worker_cur_des[w_idx])
+                else:
+                    logger.info("  ✓ Modèle RoseTTAFold All-Atom prêt en VRAM (%.1fs) — Démarrage du scaffolding !", elapsed)
+            if n_active_workers == 1:
+                logger.info("  ▸ Démarrage du design [%d/%d]...", worker_cur_des[w_idx], n_variants)
 
-            if m_ts:
-                ts = int(m_ts.group(1))
-                if pbar:
-                    pbar.update(1)
-                    pbar.set_postfix_str(f"t={ts}")
-                # Affichage régulier dans les logs texte (toutes les 5 étapes)
-                if ts != last_logged_ts and (ts % 5 == 0 or ts == num_steps):
-                    last_logged_ts = ts
-                    step_done = max(1, num_steps - ts)
-                    pct = int(step_done / num_steps * 100)
-                    logger.info("     ▸ Variant %d/%d : pas %d/%d (%d%%) [t=%d]", current_design or 1, n_variants, step_done, num_steps, pct, ts)
+        m_ts = re_timestep.search(line)
+        if m_ts:
+            if not worker_ready[w_idx]:
+                worker_ready[w_idx] = True
+                loading_event.set()
+                elapsed = _time.time() - t_start
+                if n_active_workers > 1:
+                    logger.info("  ✓ Worker %d prêt en VRAM (%.1fs) — Démarrage de la diffusion !",
+                                w_idx + 1, elapsed)
+                else:
+                    logger.info("  ✓ Modèle RoseTTAFold All-Atom prêt en VRAM (%.1fs) — Démarrage de la diffusion inverse !", elapsed)
 
-        proc.stdout.close()
+            ts = int(m_ts.group(1))
+            last_ts = worker_last_ts[w_idx]
+            if ts != last_ts and (ts % 5 == 0 or ts == num_steps):
+                worker_last_ts[w_idx] = ts
+                step_done = max(1, num_steps - ts)
+                pct = int(step_done / num_steps * 100)
+                start_des, _ = partitions[w_idx]
+                global_des_idx = start_des + worker_cur_des[w_idx]
+                if n_active_workers > 1:
+                    logger.info("     ▸ Worker %d/%d (Variant %d/%d) : pas %d/%d (%d%%) [t=%d]",
+                                w_idx + 1, n_active_workers, global_des_idx, n_variants, step_done, num_steps, pct, ts)
+                else:
+                    logger.info("     ▸ Variant %d/%d : pas %d/%d (%d%%) [t=%d]",
+                                global_des_idx, n_variants, step_done, num_steps, pct, ts)
 
     loading_event.set()
-    ret = proc.wait()
-    if pbar:
-        if pbar.n < total_steps and ret == 0:
-            pbar.update(total_steps - pbar.n)
-        pbar.close()
-
-    if ret != 0:
-        err_msg = "".join(stdout_lines[-40:])
-        logger.error("[RFdiffusion] Erreur d'exécution :\n%s", textwrap.indent(err_msg, "    "))
-        raise RuntimeError(
-            f"RFdiffusion a échoué (code={ret}). "
-            "Consultez les logs pour les détails."
-        )
+    return_codes = [p.wait() for p in procs]
+    for w_idx, ret in enumerate(return_codes):
+        if ret != 0:
+            err_msg = "".join(worker_stdout_lines[w_idx][-40:])
+            logger.error("[RFdiffusion Worker %d] Erreur d'exécution :\n%s", w_idx + 1, textwrap.indent(err_msg, "    "))
+            raise RuntimeError(
+                f"RFdiffusion worker {w_idx + 1} a échoué (code={ret}). "
+                "Consultez les logs pour les détails."
+            )
 
     # Collecte des PDB générés
     return _collect_scaffolds(output_dir, run_id, n_variants)
