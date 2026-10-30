@@ -327,6 +327,13 @@ try:
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+    # Sur A100 (40/80 Go) ou G4 (96 Go), désactiver low_memory pour garder toutes les activations
+    # en mémoire HBM2e ultra-rapide (2000 Go/s) au lieu de streamer via le bus CPU lent !
+    is_high_vram = False
+    if torch.cuda.is_available():
+        total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        if total_vram_gb >= 30:
+            is_high_vram = True
     from chai_lab.chai1 import run_inference
 except Exception as exc:
     print(f"CHAI1_INIT_FAIL: {{exc}}", file=sys.stderr)
@@ -335,7 +342,8 @@ except Exception as exc:
 with open('{tasks_file.as_posix()}', 'r', encoding='utf-8') as f:
     task_list = json.load(f)
 
-print(f"CHAI1_SESSION_START: {{len(task_list)}} séquences à replier avec poids chauds en VRAM.", flush=True)
+vram_mode = "Direct HBM2e (haute vitesse)" if is_high_vram else "Low-Memory (optimisé 24GB)"
+print(f"CHAI1_SESSION_START: {{len(task_list)}} séquences à replier avec poids chauds en VRAM [Mode : {{vram_mode}}].", flush=True)
 
 for i, t in enumerate(task_list, 1):
     out_p = pathlib.Path(t['out'])
@@ -362,7 +370,7 @@ for i, t in enumerate(task_list, 1):
                 num_trunk_recycles={recycles},
                 num_diffn_samples={samples},
                 use_esm_embeddings={use_esm},
-                low_memory=True,
+                low_memory=not is_high_vram,
             )
             elapsed = time.time() - t0
             print(f"CHAI1_ITEM_DONE: {{i}}/{{len(task_list)}}:{{name}}:{{elapsed:.1f}}", flush=True)
@@ -520,6 +528,11 @@ except Exception:
     pass
 
 try:
+    import torch
+    is_high_vram = False
+    if torch.cuda.is_available():
+        if torch.cuda.get_device_properties(0).total_memory / (1024**3) >= 30:
+            is_high_vram = True
     from chai_lab.chai1 import run_inference
 except Exception as exc:
     print(f"CHAI1_FAIL: {{exc}}", file=sys.stderr)
@@ -545,7 +558,7 @@ for attempt in range(1, max_retries + 1):
             num_trunk_recycles={recycles},
             num_diffn_samples={samples},
             use_esm_embeddings={use_esm},
-            low_memory=True,
+            low_memory=not is_high_vram,
         )
         print("CHAI1_DONE")
         sys.exit(0)
