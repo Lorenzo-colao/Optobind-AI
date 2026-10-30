@@ -97,7 +97,14 @@ def run_rfdiffusion(
     num_steps = cfg.get("num_steps", 200)
     seed      = cfg.get("seed", 42)
     use_cuda  = cfg.get("use_cuda", True)
-    num_workers = int(cfg.get("num_workers", 2))
+
+    import torch
+    default_workers = 2
+    if use_cuda and torch.cuda.is_available():
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        if vram_gb >= 30:  # A100 (40/80 Go) ou G4 (96 Go) : mise à l'échelle jusqu'à 4 workers
+            default_workers = min(4, n_variants)
+    num_workers = int(cfg.get("num_workers", default_workers))
 
     # Auto-détection des hotspots depuis contigs si binder design (/0 ou /)
     if not hotspots and auto_hotspots and ("/" in contigs or "/0" in contigs):
@@ -338,6 +345,11 @@ def _invoke_rfdiffusion(
 
     partitions = _partition_variants(n_variants, num_workers if use_cuda else 1)
     n_active_workers = len(partitions)
+
+    # Répartition des threads CPU par worker pour éviter les conflits d'ordonnancement (thread thrashing)
+    threads_per_worker = max(1, (os.cpu_count() or 4) // max(1, n_active_workers))
+    env["OMP_NUM_THREADS"] = str(threads_per_worker)
+    env["MKL_NUM_THREADS"] = str(threads_per_worker)
 
     def _build_worker_cmd(start_num: int, count: int) -> list[str]:
         cmd = [

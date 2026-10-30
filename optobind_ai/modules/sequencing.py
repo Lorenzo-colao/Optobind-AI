@@ -219,7 +219,7 @@ def _invoke_proteinmpnn(
         "--num_seq_per_target",  str(num_seq),
         "--sampling_temp",       str(sampling_temp),
         "--backbone_noise",      str(backbone_noise),
-        "--batch_size",          "1",
+        "--batch_size",          str(min(num_seq, 8)),
         "--seed",                str(seed),
     ]
 

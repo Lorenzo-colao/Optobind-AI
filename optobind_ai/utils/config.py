@@ -50,6 +50,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "num_trunk_recycles"  : 1,
         "num_diffn_samples"   : 3,
         "use_esm_embeddings"  : True,
+        "filter_native"       : True,
+        "top_k_per_scaffold"  : 0,
         "use_cuda"            : True,
     },
     "validation": {

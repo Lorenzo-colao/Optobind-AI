@@ -238,16 +238,41 @@ def main() -> int:
     # ══════════════════════════════════════════════════════════════════════════
     validation_results = []
     if not args.skip_validation:
+        val_cfg = cfg.get("alphafold", {})
+        filter_native = val_cfg.get("filter_native", True)
+        top_k = val_cfg.get("top_k_per_scaffold", 0)
+
+        seqs_to_validate = sequences
+        if filter_native:
+            # Exclut seq_00 qui est le squelette natif non optimisé issu du PDB brut
+            seqs_to_validate = [s for s in seqs_to_validate if s.index != 0]
+
+        if top_k > 0:
+            by_scaffold: dict[str, list[DesignedSequence]] = {}
+            for s in seqs_to_validate:
+                by_scaffold.setdefault(s.scaffold.name, []).append(s)
+
+            filtered: list[DesignedSequence] = []
+            for scaf_name, scaf_seqs in by_scaffold.items():
+                scaf_seqs.sort(key=lambda x: x.mpnn_score)
+                filtered.extend(scaf_seqs[:top_k])
+            seqs_to_validate = filtered
+
+        if len(seqs_to_validate) < len(sequences):
+            logger.info("")
+            logger.info("  🎯 Smart Triage : %d séquences sélectionnées sur %d pour validation 3D (économie de calcul GPU)",
+                        len(seqs_to_validate), len(sequences))
+
         logger.info("")
         logger.info("┌─ MODULE 3 : Validation (AlphaFold 3 / Chai-1) ──────────────")
         t0 = time.time()
         validation_results = run_alphafold(
-            sequences   = sequences,
+            sequences   = seqs_to_validate,
             ligand_file = ligand_path,
             target_pdb  = target_path,
             output_dir  = out_dirs["pdbs"],
             dry_run     = args.dry_run,
-            cfg         = cfg.get("alphafold", {}),
+            cfg         = val_cfg,
             logger      = logger,
         )
         logger.info("└─ Validation terminée en %.1fs.", time.time() - t0)

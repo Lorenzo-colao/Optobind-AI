@@ -60,6 +60,8 @@ alphafold:
   num_trunk_recycles: 1
   num_diffn_samples : 3
   use_esm_embeddings: true
+  filter_native     : true         # Exclut seq_00 (squelette non optimisé) pour économiser le GPU
+  top_k_per_scaffold: 0            # 0 = teste toutes les séquences créées (ex: 3 pour ne valider que le top 3)
   use_cuda          : true
 
 # ─────────────────────────────────────────────────────────────────────────────
