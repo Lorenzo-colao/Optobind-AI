@@ -263,7 +263,7 @@ except Exception as exc:
 with open('{tasks_file.as_posix()}', 'r', encoding='utf-8') as f:
     task_list = json.load(f)
 
-print(f"CHAI1_SESSION_START: {{len(task_list)}} séquences à replier avec poids chauds en VRAM.")
+print(f"CHAI1_SESSION_START: {{len(task_list)}} séquences à replier avec poids chauds en VRAM.", flush=True)
 
 for i, t in enumerate(task_list, 1):
     out_p = pathlib.Path(t['out'])
@@ -282,7 +282,8 @@ for i, t in enumerate(task_list, 1):
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"[CHAI-1 VRAM] ({{i}}/{{len(task_list)}}) Traitement {{name}}...")
+            t0 = time.time()
+            print(f"CHAI1_ITEM_START: {{i}}/{{len(task_list)}}:{{name}}", flush=True)
             cands = run_inference(
                 fasta_file=fasta_p,
                 output_dir=out_p,
@@ -291,19 +292,20 @@ for i, t in enumerate(task_list, 1):
                 use_esm_embeddings={use_esm},
                 low_memory=True,
             )
-            print(f"CHAI1_ITEM_DONE: {{name}}")
+            elapsed = time.time() - t0
+            print(f"CHAI1_ITEM_DONE: {{i}}/{{len(task_list)}}:{{name}}:{{elapsed:.1f}}", flush=True)
             break
         except Exception as exc:
             err_str = str(exc)
             is_net_err = any(k in err_str.lower() for k in ("incompleteread", "connection", "timeout", "broken", "download", "http"))
             if attempt < max_retries and is_net_err:
-                print(f"Tentative {{attempt}} interrompue (réseau). Reprise dans 5s...", file=sys.stderr)
+                print(f"Tentative {{attempt}} interrompue (réseau). Reprise dans 5s...", file=sys.stderr, flush=True)
                 time.sleep(5)
                 continue
-            print(f"CHAI1_ITEM_FAIL: {{name}} - {{exc}}", file=sys.stderr)
+            print(f"CHAI1_ITEM_FAIL: {{name}} - {{exc}}", file=sys.stderr, flush=True)
             break
 
-print("CHAI1_SESSION_DONE")
+print("CHAI1_SESSION_DONE", flush=True)
 sys.exit(0)
 """
     env = os.environ.copy()
@@ -319,24 +321,57 @@ sys.exit(0)
             env["CHAI_DOWNLOADS_DIR"] = str(cand_dir)
             break
 
-    # Détecter le répertoire de poids Chai-1 (Drive, SSD ou variable d'environnement)
-    for cand_dir in [
-        os.environ.get("CHAI_DOWNLOADS_DIR", ""),
-        "/content/chai_ssd",
-        "/content/drive/MyDrive/optobind_weights_cache/chai",
-        str(Path.home() / ".cache" / "chai"),
-    ]:
-        if cand_dir and Path(cand_dir).exists():
-            env["CHAI_DOWNLOADS_DIR"] = str(cand_dir)
-            break
-
-    cmd = [python_env_path, "-c", batch_runner_py]
+    cmd = [python_env_path, "-u", "-c", batch_runner_py]
     logger.info("  [CHAI-1 BATCH] Lancement de la session d'inférence persistante (modèle conservé en VRAM)...")
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
-    if res.returncode != 0:
-        logger.warning("  [CHAI-1 BATCH] La session globale a rencontré une anomalie :\n%s", textwrap.indent(res.stderr, "    "))
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+    )
+    stdout_lines: list[str] = []
+
+    import time as _time
+    if proc.stdout:
+        for line in iter(proc.stdout.readline, ""):
+            stdout_lines.append(line)
+            line_str = line.strip()
+
+            if line_str.startswith("CHAI1_SESSION_START:"):
+                total_s = line_str.split(":", 1)[1].strip()
+                logger.info("  ⏳ Modèle Chai-1 prêt en VRAM — Début du repliement (%s)...", total_s)
+
+            elif line_str.startswith("CHAI1_ITEM_START:"):
+                parts = line_str.split(":", 2)
+                progress = parts[1].strip()
+                item_name = parts[2].strip() if len(parts) > 2 else ""
+                logger.info("     ▸ [Chai-1 %s] Repliement en cours de %s...", progress, item_name)
+
+            elif line_str.startswith("CHAI1_ITEM_DONE:"):
+                parts = line_str.split(":", 3)
+                progress = parts[1].strip()
+                item_name = parts[2].strip() if len(parts) > 2 else ""
+                dur = parts[3].strip() if len(parts) > 3 else ""
+                dur_str = f" ({dur}s)" if dur else ""
+                logger.info("     ✓ [Chai-1 %s] %s replié%s !", progress, item_name, dur_str)
+
+            elif "CHAI1_ITEM_FAIL:" in line_str:
+                logger.warning("     ✗ %s", line_str)
+
+            elif "Tentative" in line_str and "interrompue" in line_str:
+                logger.warning("     ⚠️ %s", line_str)
+
+        proc.stdout.close()
+
+    ret = proc.wait()
+    if ret != 0:
+        err_msg = "".join(stdout_lines[-30:])
+        logger.warning("  [CHAI-1 BATCH] La session globale a rencontré une anomalie :\n%s", textwrap.indent(err_msg, "    "))
     else:
-        logger.info("  [CHAI-1 BATCH] Repliement de toutes les structures terminé avec succès.")
+        logger.info("  ✓ [CHAI-1 BATCH] Repliement de toutes les structures terminé avec succès.")
 
 
 def _run_chai1(
