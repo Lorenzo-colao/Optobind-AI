@@ -409,6 +409,13 @@ def patch_fast_inference(rf_dir: Path) -> bool:
     try:
         text = inference_path.read_text(encoding="utf-8")
         changed = False
+
+        # Si l'ancien monkey-patch inference_mode est présent, le retirer car RoseTTAFold All-Atom
+        # utilise torch.autograd.grad dans calc_chiral_grads (Track_module.py)
+        if 'if hasattr(torch, "inference_mode"):' in text:
+            text = text.replace('if hasattr(torch, "inference_mode"):\n    torch.no_grad = torch.inference_mode\n', '')
+            changed = True
+
         if "torch.backends.cuda.matmul.allow_tf32" not in text and "import torch" in text:
             tf32_code = """import torch
 if torch.cuda.is_available():
@@ -419,8 +426,6 @@ if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
     except Exception:
         pass
-if hasattr(torch, "inference_mode"):
-    torch.no_grad = torch.inference_mode
 """
             text = text.replace("import torch", tf32_code, 1)
             changed = True
@@ -438,14 +443,14 @@ if hasattr(torch, "inference_mode"):
         if changed:
             inference_path.write_text(text, encoding="utf-8")
 
-        # Patcher également model_runners.py pour forcer inference_mode
+        # Restaurer torch.no_grad() dans model_runners.py (requis pour calc_chiral_grads)
         mr_path = rf_dir / "inference" / "model_runners.py"
         if mr_path.is_file():
             mr_text = mr_path.read_text(encoding="utf-8")
-            if "with torch.no_grad():" in mr_text:
+            if "with (torch.inference_mode() if hasattr(torch, 'inference_mode') else torch.no_grad()):" in mr_text:
                 mr_text = mr_text.replace(
-                    "with torch.no_grad():",
-                    "with (torch.inference_mode() if hasattr(torch, 'inference_mode') else torch.no_grad()):"
+                    "with (torch.inference_mode() if hasattr(torch, 'inference_mode') else torch.no_grad()):",
+                    "with torch.no_grad():"
                 )
                 mr_path.write_text(mr_text, encoding="utf-8")
 
