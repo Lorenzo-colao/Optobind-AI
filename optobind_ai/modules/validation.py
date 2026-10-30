@@ -367,6 +367,7 @@ for i, t in enumerate(task_list, 1):
             cands = run_inference(
                 fasta_file=fasta_p,
                 output_dir=out_p,
+                device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
                 num_trunk_recycles={recycles},
                 num_diffn_samples={samples},
                 use_esm_embeddings={use_esm},
@@ -555,6 +556,7 @@ for attempt in range(1, max_retries + 1):
         cands = run_inference(
             fasta_file=fasta_p,
             output_dir=out_p,
+            device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
             num_trunk_recycles={recycles},
             num_diffn_samples={samples},
             use_esm_embeddings={use_esm},
