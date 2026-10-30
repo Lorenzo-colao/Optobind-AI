@@ -47,8 +47,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "alphafold": {
         "backend"             : "chai-1",   # "alphafold3" | "chai-1" | "esmfold"
         "model_dir"           : "weights/chai-1/",
-        "num_trunk_recycles"  : 3,
-        "num_diffn_samples"   : 5,
+        "num_trunk_recycles"  : 1,
+        "num_diffn_samples"   : 3,
         "use_esm_embeddings"  : True,
         "use_cuda"            : True,
     },

@@ -57,8 +57,8 @@ alphafold:
   # backend : "chai-1" | "esmfold" | "alphafold3"
   backend           : "chai-1"
   model_dir         : "weights/chai-1/"
-  num_trunk_recycles: 3
-  num_diffn_samples : 5
+  num_trunk_recycles: 1
+  num_diffn_samples : 3
   use_esm_embeddings: true
   use_cuda          : true
 
