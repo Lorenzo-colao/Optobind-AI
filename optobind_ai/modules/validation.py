@@ -77,7 +77,7 @@ def run_alphafold(
 
     # ── Optimisation VRAM Chai-1 : Exécution en session persistante (Batch) ────
     if backend == "chai-1" and not dry_run and sequences:
-        _run_chai1_batch(
+        batch_results = _run_chai1_batch(
             sequences   = sequences,
             ligand_file = ligand_file,
             target_pdb  = target_pdb,
@@ -87,6 +87,23 @@ def run_alphafold(
             cfg         = cfg,
             logger      = logger,
         )
+        for seq in sequences:
+            if seq.name in batch_results:
+                results.append(batch_results[seq.name])
+            else:
+                res = _predict_and_validate(
+                    seq         = seq,
+                    ligand_file = ligand_file,
+                    target_pdb  = target_pdb,
+                    output_dir  = output_dir,
+                    backend     = backend,
+                    model_dir   = model_dir,
+                    use_cuda    = use_cuda,
+                    cfg         = cfg,
+                    logger      = logger,
+                )
+                results.append(res)
+        return results
 
     try:
         from tqdm import tqdm
@@ -194,6 +211,61 @@ def _predict_and_validate(
     return result
 
 
+def _evaluate_single_prediction(
+    seq         : DesignedSequence,
+    out_dir     : Path,
+    target_pdb  : Path,
+    ligand_file : Path,
+    cfg         : dict[str, Any],
+    logger      : logging.Logger,
+) -> ValidationResult:
+    """Évalue immédiatement une structure prédite par Chai-1 dès sa sortie."""
+    cif_file = _find_prediction_file(out_dir, ["*.cif"])
+    if cif_file:
+        try:
+            import gemmi
+            doc = gemmi.cif.read_file(str(cif_file))
+            st = gemmi.make_structure_from_block(doc.sole_block())
+            pdb_out = out_dir / "pred.pdb"
+            st.write_minimal_pdb(str(pdb_out))
+        except Exception as exc:
+            logger.debug("[GEMMI] Conversion CIF vers PDB : %s", exc)
+
+    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
+    plddt_scores = _parse_chai_plddt(out_dir, logger)
+    plddt_mean = sum(plddt_scores) / len(plddt_scores) if plddt_scores else 0.0
+
+    rmsd = _compute_rmsd(
+        reference_pdb = seq.scaffold.pdb_path,
+        predicted_pdb = pred_pdb,
+        logger        = logger,
+    ) if pred_pdb else float("inf")
+
+    n_clashes = _count_clashes(
+        pdb_path   = pred_pdb,
+        vdw_cutoff = cfg.get("clash_vdw_cutoff", 0.6),
+        logger     = logger,
+    ) if pred_pdb else 0
+
+    pocket_slice = plddt_scores[30:51] if len(plddt_scores) > 50 else plddt_scores
+    plddt_pocket = sum(pocket_slice) / len(pocket_slice) if pocket_slice else 0.0
+
+    from optobind_ai.utils.config import DEFAULT_CONFIG
+    rmsd_thresh  = cfg.get("rmsd_threshold", DEFAULT_CONFIG["validation"]["rmsd_threshold"])
+    plddt_thresh = cfg.get("plddt_threshold", DEFAULT_CONFIG["validation"]["plddt_threshold"])
+
+    res = ValidationResult(
+        sequence     = seq,
+        pdb_path     = pred_pdb,
+        plddt_mean   = plddt_mean,
+        plddt_pocket = plddt_pocket,
+        rmsd         = rmsd,
+        n_clashes    = n_clashes,
+    )
+    res.validate(rmsd_thresh, plddt_thresh)
+    return res
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Backend Chai-1
 # ──────────────────────────────────────────────────────────────────────────────
@@ -207,7 +279,7 @@ def _run_chai1_batch(
     use_cuda    : bool,
     cfg         : dict[str, Any],
     logger      : logging.Logger,
-) -> None:
+) -> dict[str, ValidationResult]:
     """
     Exécute l'inférence Chai-1 en une seule session persistante pour toutes
     les séquences. Le modèle (~5.6 Go) est chargé UNE SEULE FOIS en VRAM
@@ -333,6 +405,8 @@ sys.exit(0)
         env=env,
     )
     stdout_lines: list[str] = []
+    evaluated_results: dict[str, ValidationResult] = {}
+    seq_map = {s.name: s for s in sequences}
 
     import time as _time
     if proc.stdout:
@@ -356,7 +430,25 @@ sys.exit(0)
                 item_name = parts[2].strip() if len(parts) > 2 else ""
                 dur = parts[3].strip() if len(parts) > 3 else ""
                 dur_str = f" ({dur}s)" if dur else ""
-                logger.info("     ✓ [Chai-1 %s] %s replié%s !", progress, item_name, dur_str)
+
+                seq_obj = seq_map.get(item_name)
+                if seq_obj:
+                    res = _evaluate_single_prediction(
+                        seq         = seq_obj,
+                        out_dir     = output_dir / item_name,
+                        target_pdb  = target_pdb,
+                        ligand_file = ligand_file,
+                        cfg         = cfg,
+                        logger      = logger,
+                    )
+                    evaluated_results[item_name] = res
+                    status = "✓ PASS" if res.passed else "✗ FAIL"
+                    logger.info(
+                        "     ✓ [Chai-1 %s] %s replié%s → %s  |  pLDDT=%.1f  |  RMSD=%.2f Å  |  clashes=%d",
+                        progress, item_name, dur_str, status, res.plddt_mean, res.rmsd, res.n_clashes,
+                    )
+                else:
+                    logger.info("     ✓ [Chai-1 %s] %s replié%s !", progress, item_name, dur_str)
 
             elif "CHAI1_ITEM_FAIL:" in line_str:
                 logger.warning("     ✗ %s", line_str)
@@ -372,6 +464,8 @@ sys.exit(0)
         logger.warning("  [CHAI-1 BATCH] La session globale a rencontré une anomalie :\n%s", textwrap.indent(err_msg, "    "))
     else:
         logger.info("  ✓ [CHAI-1 BATCH] Repliement de toutes les structures terminé avec succès.")
+
+    return evaluated_results
 
 
 def _run_chai1(
