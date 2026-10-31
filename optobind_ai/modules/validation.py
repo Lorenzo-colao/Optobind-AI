@@ -134,8 +134,8 @@ def run_alphafold(
         if hasattr(seq_iter, "set_postfix_str"):
             seq_iter.set_postfix_str(f"{seq.name.split('_')[-2]}_{seq.name.split('_')[-1]} {status} (pLDDT={res.plddt_mean:.1f})")
         logger.info(
-            "       %s  pLDDT=%.1f  RMSD=%.2f Å  clashes=%d",
-            status, res.plddt_mean, res.rmsd, res.n_clashes,
+            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  RMSD=%.2f Å  clashes=%d",
+            status, res.plddt_mean, res.ptm, res.iptm, res.rmsd, res.n_clashes,
         )
 
     return results
@@ -199,6 +199,8 @@ def _predict_and_validate(
     rmsd_thresh  = DEFAULT_CONFIG["validation"]["rmsd_threshold"]
     plddt_thresh = DEFAULT_CONFIG["validation"]["plddt_threshold"]
 
+    ptm, iptm = _parse_chai_tm_scores(output_dir / seq.name, logger)
+
     result = ValidationResult(
         sequence     = seq,
         pdb_path     = predicted_pdb,
@@ -206,6 +208,8 @@ def _predict_and_validate(
         plddt_pocket = plddt_pocket,
         rmsd         = rmsd,
         n_clashes    = n_clashes,
+        ptm          = ptm,
+        iptm         = iptm,
     )
     result.validate(rmsd_thresh, plddt_thresh)
     return result
@@ -254,6 +258,8 @@ def _evaluate_single_prediction(
     rmsd_thresh  = cfg.get("rmsd_threshold", DEFAULT_CONFIG["validation"]["rmsd_threshold"])
     plddt_thresh = cfg.get("plddt_threshold", DEFAULT_CONFIG["validation"]["plddt_threshold"])
 
+    ptm, iptm = _parse_chai_tm_scores(out_dir, logger)
+
     res = ValidationResult(
         sequence     = seq,
         pdb_path     = pred_pdb,
@@ -261,6 +267,8 @@ def _evaluate_single_prediction(
         plddt_pocket = plddt_pocket,
         rmsd         = rmsd,
         n_clashes    = n_clashes,
+        ptm          = ptm,
+        iptm         = iptm,
     )
     res.validate(rmsd_thresh, plddt_thresh)
     return res
@@ -453,8 +461,8 @@ sys.exit(0)
                     evaluated_results[item_name] = res
                     status = "✓ PASS" if res.passed else "✗ FAIL"
                     logger.info(
-                        "     ✓ [Chai-1 %s] %s replié%s → %s  |  pLDDT=%.1f  |  RMSD=%.2f Å  |  clashes=%d",
-                        progress, item_name, dur_str, status, res.plddt_mean, res.rmsd, res.n_clashes,
+                        "     ✓ [Chai-1 %s] %s replié%s → %s  |  pLDDT=%.1f  |  pTM=%.3f  |  ipTM=%.3f  |  RMSD=%.2f Å  |  clashes=%d",
+                        progress, item_name, dur_str, status, res.plddt_mean, res.ptm, res.iptm, res.rmsd, res.n_clashes,
                     )
                 else:
                     logger.info("     ✓ [Chai-1 %s] %s replié%s !", progress, item_name, dur_str)
@@ -960,6 +968,28 @@ def _parse_chai_plddt(out_dir: Path, logger: logging.Logger) -> list[float]:
     return []
 
 
+def _parse_chai_tm_scores(out_dir: Path, logger: logging.Logger) -> tuple[float, float]:
+    """Lit les métriques pTM et ipTM générées par Chai-1 (fichiers NPZ ou JSON)."""
+    ptm, iptm = 0.0, 0.0
+    for npz_path in sorted(out_dir.glob("scores*.npz")):
+        try:
+            import numpy as _np
+            npz_data = _np.load(npz_path)
+            if "ptm" in npz_data:
+                arr = npz_data["ptm"].flatten()
+                if len(arr) > 0:
+                    ptm = round(float(arr[0]), 4)
+            if "iptm" in npz_data:
+                arr = npz_data["iptm"].flatten()
+                if len(arr) > 0:
+                    iptm = round(float(arr[0]), 4)
+            if ptm > 0 or iptm > 0:
+                return ptm, iptm
+        except Exception as exc:
+            logger.debug("[CHAI TM NPZ] %s: %s", npz_path.name, exc)
+    return ptm, iptm
+
+
 def _sdf_to_smiles(ligand_file: Path, logger: logging.Logger) -> str:
     """
     Convertit un SDF en SMILES via RDKit (si disponible),
@@ -1014,6 +1044,8 @@ def _dry_run_validation(
 
     plddt_mean   = round(random.uniform(75.0, 98.0), 2)
     plddt_pocket = round(random.uniform(70.0, 99.0), 2)
+    ptm          = round(random.uniform(0.70, 0.95), 3)
+    iptm         = round(random.uniform(0.60, 0.90), 3)
     rmsd         = round(random.uniform(0.5, 3.5),   3)
     n_clashes    = random.randint(0, 3)
 
@@ -1024,6 +1056,8 @@ def _dry_run_validation(
         plddt_pocket = plddt_pocket,
         rmsd         = rmsd,
         n_clashes    = n_clashes,
+        ptm          = ptm,
+        iptm         = iptm,
         metadata     = {"dry_run": True},
     )
     result.validate(rmsd_threshold=2.0, plddt_threshold=90.0)

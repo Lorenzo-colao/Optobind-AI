@@ -36,6 +36,8 @@ _CSV_HEADERS = [
     "mpnn_score",
     "plddt_mean",
     "plddt_pocket",
+    "ptm",
+    "iptm",
     "rmsd_angstrom",
     "n_steric_clashes",
     "passed",
@@ -90,6 +92,8 @@ def build_report(
             "mpnn_score"        : f"{seq.mpnn_score:.4f}",
             "plddt_mean"        : f"{val.plddt_mean:.2f}"    if val else "N/A",
             "plddt_pocket"      : f"{val.plddt_pocket:.2f}"  if val else "N/A",
+            "ptm"               : f"{val.ptm:.4f}"           if val else "N/A",
+            "iptm"              : f"{val.iptm:.4f}"          if val else "N/A",
             "rmsd_angstrom"     : f"{val.rmsd:.4f}"          if val else "N/A",
             "n_steric_clashes"  : str(val.n_clashes)         if val else "N/A",
             "passed"            : str(val.passed)            if val else "N/A",
@@ -160,9 +164,9 @@ def print_summary(
     n_fail = len(validation_results) - n_pass
     n_no_val = len(sequences) - len(validation_results)
 
-    sep = "-" * 72
+    sep = "-" * 86
 
-    _print(f"\n{BOLD}{'=' * 72}{RESET}")
+    _print(f"\n{BOLD}{'=' * 86}{RESET}")
     _print(f"{BOLD}  RESUME OptoBind-AI{RESET}")
     _print(f"{sep}")
     _print(f"  Squelettes generes  : {len(scaffolds)}")
@@ -174,7 +178,7 @@ def print_summary(
 
     if validation_results:
         header = (
-            f"  {'Variant':<35} {'pLDDT':>7} {'RMSD(A)':>8} "
+            f"  {'Variant':<35} {'pLDDT':>7} {'pTM':>6} {'ipTM':>6} {'RMSD(A)':>8} "
             f"{'Clashes':>8} {'Status':>7}"
         )
         _print(header)
@@ -184,6 +188,7 @@ def print_summary(
             status = "PASS OK" if v.passed else "FAIL  X"
             _print(
                 f"  {v.sequence.name:<35} {v.plddt_mean:>7.2f} "
+                f"{v.ptm:>6.3f} {v.iptm:>6.3f} "
                 f"{v.rmsd:>8.3f} {v.n_clashes:>8d} "
                 f"{color}{status:>7}{RESET}"
             )
@@ -193,4 +198,4 @@ def print_summary(
     _print(f"{sep}")
     _print(f"  Rapport CSV   : {report_path}")
     _print(f"  Rapport Excel : {report_path.with_suffix('.xlsx')}")
-    _print(f"{'=' * 72}{RESET}\n")
+    _print(f"{'=' * 86}{RESET}\n")

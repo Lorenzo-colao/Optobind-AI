@@ -64,6 +64,8 @@ class ValidationResult:
     plddt_pocket  : float = 0.0     # pLDDT moyen sur la poche de liaison
     rmsd          : float = float("inf")
     n_clashes     : int   = 0
+    ptm           : float = 0.0     # predicted TM-score (qualité du repliement global)
+    iptm          : float = 0.0     # interface predicted TM-score (complexe / ligand)
     passed        : bool  = False
     metadata      : dict  = field(default_factory=dict)
 
