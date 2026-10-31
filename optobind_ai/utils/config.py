@@ -55,10 +55,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "use_cuda"            : True,
     },
     "validation": {
-        "rmsd_threshold"      : 2.0,   # Å
-        "plddt_threshold"     : 90.0,  # score AlphaFold
-        "clash_vdw_cutoff"    : 0.6,   # fraction de rayon de Van der Waals
-        "max_unpaired_cys"    : 0,     # Nombre maximal de cystéines orphelines (0 = tolérance zéro)
+        "rmsd_threshold"            : 2.0,   # Å
+        "plddt_threshold"           : 90.0,  # score AlphaFold
+        "clash_vdw_cutoff"          : 0.6,   # fraction de rayon de Van der Waals
+        "max_unpaired_cys"          : 0,     # Nombre maximal de cystéines orphelines (0 = tolérance zéro)
+        "max_hydrophobic_sasa_pct"  : 35.0,  # Seuil max de surface hydrophobe (V, L, I, F, W, M en % de SASA)
     },
 }
 
