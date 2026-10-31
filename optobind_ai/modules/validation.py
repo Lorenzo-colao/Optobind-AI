@@ -134,8 +134,8 @@ def run_alphafold(
         if hasattr(seq_iter, "set_postfix_str"):
             seq_iter.set_postfix_str(f"{seq.name.split('_')[-2]}_{seq.name.split('_')[-1]} {status} (pLDDT={res.plddt_mean:.1f})")
         logger.info(
-            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  RMSD=%.2f Å  clashes=%d",
-            status, res.plddt_mean, res.ptm, res.iptm, res.rmsd, res.n_clashes,
+            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  ΔSASA=%.0f Å²  RMSD=%.2f Å  clashes=%d",
+            status, res.plddt_mean, res.ptm, res.iptm, res.delta_sasa, res.rmsd, res.n_clashes,
         )
 
     return results
@@ -200,6 +200,7 @@ def _predict_and_validate(
     plddt_thresh = DEFAULT_CONFIG["validation"]["plddt_threshold"]
 
     ptm, iptm = _parse_chai_tm_scores(output_dir / seq.name, logger)
+    sasa, delta_sasa = _compute_sasa(predicted_pdb, logger)
 
     result = ValidationResult(
         sequence     = seq,
@@ -210,6 +211,8 @@ def _predict_and_validate(
         n_clashes    = n_clashes,
         ptm          = ptm,
         iptm         = iptm,
+        sasa         = sasa,
+        delta_sasa   = delta_sasa,
     )
     result.validate(rmsd_thresh, plddt_thresh)
     return result
@@ -259,6 +262,7 @@ def _evaluate_single_prediction(
     plddt_thresh = cfg.get("plddt_threshold", DEFAULT_CONFIG["validation"]["plddt_threshold"])
 
     ptm, iptm = _parse_chai_tm_scores(out_dir, logger)
+    sasa, delta_sasa = _compute_sasa(pred_pdb, logger)
 
     res = ValidationResult(
         sequence     = seq,
@@ -269,6 +273,8 @@ def _evaluate_single_prediction(
         n_clashes    = n_clashes,
         ptm          = ptm,
         iptm         = iptm,
+        sasa         = sasa,
+        delta_sasa   = delta_sasa,
     )
     res.validate(rmsd_thresh, plddt_thresh)
     return res
@@ -461,8 +467,8 @@ sys.exit(0)
                     evaluated_results[item_name] = res
                     status = "✓ PASS" if res.passed else "✗ FAIL"
                     logger.info(
-                        "     ✓ [Chai-1 %s] %s replié%s → %s  |  pLDDT=%.1f  |  pTM=%.3f  |  ipTM=%.3f  |  RMSD=%.2f Å  |  clashes=%d",
-                        progress, item_name, dur_str, status, res.plddt_mean, res.ptm, res.iptm, res.rmsd, res.n_clashes,
+                        "     ✓ [Chai-1 %s] %s replié%s → %s  |  pLDDT=%.1f  |  pTM=%.3f  |  ipTM=%.3f  |  ΔSASA=%.0f Å²  |  RMSD=%.2f Å  |  clashes=%d",
+                        progress, item_name, dur_str, status, res.plddt_mean, res.ptm, res.iptm, res.delta_sasa, res.rmsd, res.n_clashes,
                     )
                 else:
                     logger.info("     ✓ [Chai-1 %s] %s replié%s !", progress, item_name, dur_str)
@@ -884,6 +890,62 @@ def _count_clashes(
         return 0
 
 
+def _compute_sasa(
+    pdb_path: Path | None,
+    logger: logging.Logger | None = None,
+) -> tuple[float, float]:
+    """
+    Calcule la surface accessible au solvant (SASA) totale et la surface
+    enfouie à l'interface (ΔSASA) via l'algorithme de Shrake-Rupley de Biopython.
+
+    Returns
+    -------
+    tuple[float, float]
+        (sasa_totale_Å², delta_sasa_interface_Å²)
+    """
+    if pdb_path is None or not pdb_path.exists():
+        return 0.0, 0.0
+
+    try:
+        from Bio.PDB import PDBParser, ShrakeRupley, Structure, Model
+
+        parser = PDBParser(QUIET=True)
+        struct = parser.get_structure("complex", str(pdb_path))
+        if len(struct) == 0:
+            return 0.0, 0.0
+
+        model = struct[0]
+        sr = ShrakeRupley()
+        sr.compute(struct, level="S")
+        total_sasa = round(float(struct.sasa), 1)
+
+        chains = list(model.get_chains())
+        if len(chains) <= 1:
+            return total_sasa, 0.0
+
+        # Calcul des surfaces des chaînes isolées : ΔSASA = Σ SASA(chaîne) - SASA(complexe)
+        sum_isolated = 0.0
+        for ch in chains:
+            s_isolated = Structure.Structure(ch.id)
+            m_isolated = Model.Model(0)
+            s_isolated.add(m_isolated)
+            m_isolated.add(ch.copy())
+            sr.compute(s_isolated, level="S")
+            sum_isolated += float(s_isolated.sasa)
+
+        delta_sasa = max(0.0, round(float(sum_isolated - struct.sasa), 1))
+        return total_sasa, delta_sasa
+
+    except ImportError:
+        if logger:
+            logger.debug("[SASA] Biopython non disponible pour le calcul de SASA.")
+        return 0.0, 0.0
+    except Exception as exc:
+        if logger:
+            logger.debug("[SASA] Erreur calcul SASA : %s", exc)
+        return 0.0, 0.0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Parsers auxiliaires
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1046,6 +1108,8 @@ def _dry_run_validation(
     plddt_pocket = round(random.uniform(70.0, 99.0), 2)
     ptm          = round(random.uniform(0.70, 0.95), 3)
     iptm         = round(random.uniform(0.60, 0.90), 3)
+    sasa         = round(random.uniform(4500.0, 6500.0), 1)
+    delta_sasa   = round(random.uniform(500.0, 950.0), 1)
     rmsd         = round(random.uniform(0.5, 3.5),   3)
     n_clashes    = random.randint(0, 3)
 
@@ -1058,6 +1122,8 @@ def _dry_run_validation(
         n_clashes    = n_clashes,
         ptm          = ptm,
         iptm         = iptm,
+        sasa         = sasa,
+        delta_sasa   = delta_sasa,
         metadata     = {"dry_run": True},
     )
     result.validate(rmsd_threshold=2.0, plddt_threshold=90.0)

@@ -66,6 +66,8 @@ class ValidationResult:
     n_clashes     : int   = 0
     ptm           : float = 0.0     # predicted TM-score (qualité du repliement global)
     iptm          : float = 0.0     # interface predicted TM-score (complexe / ligand)
+    sasa          : float = 0.0     # Surface accessible au solvant totale (Å²)
+    delta_sasa    : float = 0.0     # Surface enfouie à l'interface (ΔSASA en Å²)
     passed        : bool  = False
     metadata      : dict  = field(default_factory=dict)
 
