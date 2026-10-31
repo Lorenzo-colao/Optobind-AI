@@ -32,6 +32,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+from optobind_ai.modules.biophysics import compute_physicochemical_properties
 from optobind_ai.utils.io_helpers import DesignedSequence, Scaffold, read_fasta
 
 
@@ -354,13 +355,18 @@ def _collect_sequences(
         for header, sequence in read_fasta(fasta_file):
             score = _parse_global_score(header)
             fasta_out = output_dir / f"{scaffold.name}_seq_{seq_index:02d}.fasta"
+            props = compute_physicochemical_properties(sequence)
             ds = DesignedSequence(
                 index      = seq_index,
                 scaffold   = scaffold,
                 sequence   = sequence,
                 fasta_path = fasta_out,
                 mpnn_score = score,
-                metadata   = {"mpnn_header": header},
+                pi         = props["pi"],
+                charge_ph7 = props["charge_ph7"],
+                gravy      = props["gravy"],
+                mw_kda     = props["mw_kda"],
+                metadata   = {"mpnn_header": header, "instability": props["instability"]},
             )
             fasta_out.write_text(ds.to_fasta(), encoding="utf-8")
             designed.append(ds)
@@ -417,6 +423,7 @@ def _dry_run_sequences(
         sequence = "".join(seq_chars)
         score = round(random.uniform(0.3, 1.5), 4)
         fasta_out = output_dir / f"{scaffold.name}_seq_{i:02d}.fasta"
+        props = compute_physicochemical_properties(sequence)
 
         ds = DesignedSequence(
             index      = i,
@@ -424,7 +431,11 @@ def _dry_run_sequences(
             sequence   = sequence,
             fasta_path = fasta_out,
             mpnn_score = score,
-            metadata   = {"dry_run": True},
+            pi         = props["pi"],
+            charge_ph7 = props["charge_ph7"],
+            gravy      = props["gravy"],
+            mw_kda     = props["mw_kda"],
+            metadata   = {"dry_run": True, "instability": props["instability"]},
         )
         fasta_out.write_text(ds.to_fasta(), encoding="utf-8")
         designed.append(ds)

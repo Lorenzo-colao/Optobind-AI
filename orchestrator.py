@@ -276,6 +276,18 @@ def main() -> int:
             logger      = logger,
         )
         logger.info("└─ Validation terminée en %.1fs.", time.time() - t0)
+
+        # ── Annotation de solubilité (API Protein-Sol sur le Top 3) ───────────
+        if validation_results:
+            from optobind_ai.modules.biophysics import annotate_top_candidates_solubility
+            logger.info("")
+            logger.info("┌─ OPTION : Solubilité Protein-Sol (Top 3 candidats) ─────────")
+            annotate_top_candidates_solubility(
+                validation_results = validation_results,
+                top_n              = val_cfg.get("top_solubility_api", 3),
+                logger             = logger,
+            )
+            logger.info("└─ Analyse de solubilité terminée.")
     else:
         logger.warning("[SKIP] Étape de validation AlphaFold ignorée (--skip-validation).")
 

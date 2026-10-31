@@ -34,6 +34,12 @@ _CSV_HEADERS = [
     "sequence_index",
     "sequence_length",
     "mpnn_score",
+    "pi",
+    "charge_ph7",
+    "gravy",
+    "mw_kda",
+    "solubility_score",
+    "solubility_percent",
     "plddt_mean",
     "plddt_pocket",
     "ptm",
@@ -93,6 +99,12 @@ def build_report(
             "sequence_index"    : seq.index,
             "sequence_length"   : len(seq.sequence),
             "mpnn_score"        : f"{seq.mpnn_score:.4f}",
+            "pi"                : f"{seq.pi:.2f}",
+            "charge_ph7"        : f"{seq.charge_ph7:.2f}",
+            "gravy"             : f"{seq.gravy:.3f}",
+            "mw_kda"            : f"{seq.mw_kda:.1f}",
+            "solubility_score"  : f"{val.solubility_score:.3f}" if val and val.solubility_score is not None else "N/A",
+            "solubility_percent": f"{val.solubility_percent:.1f}%" if val and val.solubility_percent is not None else "N/A",
             "plddt_mean"        : f"{val.plddt_mean:.2f}"    if val else "N/A",
             "plddt_pocket"      : f"{val.plddt_pocket:.2f}"  if val else "N/A",
             "ptm"               : f"{val.ptm:.4f}"           if val else "N/A",
@@ -170,9 +182,9 @@ def print_summary(
     n_fail = len(validation_results) - n_pass
     n_no_val = len(sequences) - len(validation_results)
 
-    sep = "-" * 102
+    sep = "-" * 115
 
-    _print(f"\n{BOLD}{'=' * 102}{RESET}")
+    _print(f"\n{BOLD}{'=' * 115}{RESET}")
     _print(f"{BOLD}  RESUME OptoBind-AI{RESET}")
     _print(f"{sep}")
     _print(f"  Squelettes generes  : {len(scaffolds)}")
@@ -184,18 +196,20 @@ def print_summary(
 
     if validation_results:
         header = (
-            f"  {'Variant':<35} {'pLDDT':>7} {'pTM':>6} {'ipTM':>6} {'PAE(A)':>7} {'dSASA':>7} {'RMSD(A)':>8} "
-            f"{'Clashes':>8} {'Status':>7}"
+            f"  {'Variant':<35} {'pLDDT':>6} {'pTM':>5} {'ipTM':>5} {'PAE':>5} {'dSASA':>6} "
+            f"{'pI':>5} {'GRAVY':>6} {'Solub.':>6} {'RMSD':>6} {'Clash':>5} {'Status':>7}"
         )
         _print(header)
         _print(f"  {sep[2:]}")
         for v in validation_results:
             color  = GREEN if v.passed else RED
             status = "PASS OK" if v.passed else "FAIL  X"
+            sol_str = f"{v.solubility_score:.2f}" if v.solubility_score is not None else "-"
             _print(
-                f"  {v.sequence.name:<35} {v.plddt_mean:>7.2f} "
-                f"{v.ptm:>6.3f} {v.iptm:>6.3f} {v.pae_inter:>7.2f} {v.delta_sasa:>7.0f} "
-                f"{v.rmsd:>8.3f} {v.n_clashes:>8d} "
+                f"  {v.sequence.name:<35} {v.plddt_mean:>6.1f} "
+                f"{v.ptm:>5.2f} {v.iptm:>5.2f} {v.pae_inter:>5.1f} {v.delta_sasa:>6.0f} "
+                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>6.2f} {sol_str:>6} "
+                f"{v.rmsd:>6.2f} {v.n_clashes:>5d} "
                 f"{color}{status:>7}{RESET}"
             )
     else:
@@ -204,4 +218,4 @@ def print_summary(
     _print(f"{sep}")
     _print(f"  Rapport CSV   : {report_path}")
     _print(f"  Rapport Excel : {report_path.with_suffix('.xlsx')}")
-    _print(f"{'=' * 102}{RESET}\n")
+    _print(f"{'=' * 115}{RESET}\n")

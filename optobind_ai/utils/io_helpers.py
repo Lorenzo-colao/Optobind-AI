@@ -44,6 +44,10 @@ class DesignedSequence:
     sequence     : str
     fasta_path   : Path
     mpnn_score   : float = 0.0   # score global_score (log-vraisemblance négative)
+    pi           : float = 7.0   # point isoélectrique théorique
+    charge_ph7   : float = 0.0   # charge nette à pH 7.4
+    gravy        : float = 0.0   # indice d'hydropathie GRAVY (< 0 = hydrophile)
+    mw_kda       : float = 0.0   # masse moléculaire en kDa
     metadata     : dict  = field(default_factory=dict)
 
     @property
@@ -58,20 +62,22 @@ class DesignedSequence:
 class ValidationResult:
     """Résultat de la validation structurale AlphaFold / Chai-1."""
 
-    sequence      : DesignedSequence
-    pdb_path      : Path | None = None
-    plddt_mean    : float = 0.0
-    plddt_pocket  : float = 0.0     # pLDDT moyen sur la poche de liaison
-    rmsd          : float = float("inf")
-    n_clashes     : int   = 0
-    ptm           : float = 0.0     # predicted TM-score (qualité du repliement global)
-    iptm          : float = 0.0     # interface predicted TM-score (complexe / ligand)
-    pae_mean      : float = 0.0     # PAE moyen global (Å)
-    pae_inter     : float = 0.0     # PAE inter-domaines / inter-chaînes (Å)
-    sasa          : float = 0.0     # Surface accessible au solvant totale (Å²)
-    delta_sasa    : float = 0.0     # Surface enfouie à l'interface (ΔSASA en Å²)
-    passed        : bool  = False
-    metadata      : dict  = field(default_factory=dict)
+    sequence           : DesignedSequence
+    pdb_path           : Path | None = None
+    plddt_mean         : float = 0.0
+    plddt_pocket       : float = 0.0     # pLDDT moyen sur la poche de liaison
+    rmsd               : float = float("inf")
+    n_clashes          : int   = 0
+    ptm                : float = 0.0     # predicted TM-score (qualité du repliement global)
+    iptm               : float = 0.0     # interface predicted TM-score (complexe / ligand)
+    pae_mean           : float = 0.0     # PAE moyen global (Å)
+    pae_inter          : float = 0.0     # PAE inter-domaines / inter-chaînes (Å)
+    sasa               : float = 0.0     # Surface accessible au solvant totale (Å²)
+    delta_sasa         : float = 0.0     # Surface enfouie à l'interface (ΔSASA en Å²)
+    solubility_score   : float | None = None  # Score mis à l'échelle Protein-Sol (> 0.45)
+    solubility_percent : float | None = None  # % de solubilité estimé Protein-Sol
+    passed             : bool  = False
+    metadata           : dict  = field(default_factory=dict)
 
     def validate(
         self,
