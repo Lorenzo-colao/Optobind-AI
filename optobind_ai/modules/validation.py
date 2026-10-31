@@ -907,9 +907,13 @@ def _compute_sasa(
         return 0.0, 0.0
 
     try:
-        from Bio.PDB import PDBParser, ShrakeRupley, Structure, Model
+        from Bio.PDB import PDBParser, MMCIFParser, ShrakeRupley, Structure, Model
 
-        parser = PDBParser(QUIET=True)
+        if pdb_path.suffix.lower() in (".cif", ".mmcif"):
+            parser = MMCIFParser(QUIET=True)
+        else:
+            parser = PDBParser(QUIET=True)
+
         struct = parser.get_structure("complex", str(pdb_path))
         if len(struct) == 0:
             return 0.0, 0.0
