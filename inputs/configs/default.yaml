@@ -71,3 +71,4 @@ validation:
   rmsd_threshold    : 2.0    # Seuil RMSD Cα (Å) — doit être < ce seuil
   plddt_threshold   : 90.0   # pLDDT moyen requis (sur 100)
   clash_vdw_cutoff  : 0.6    # Fraction du rayon VdW pour détecter un clash
+  max_unpaired_cys  : 0      # Tolérance cystéines orphelines (0 = aucune tolérée pour éviter agrégation)

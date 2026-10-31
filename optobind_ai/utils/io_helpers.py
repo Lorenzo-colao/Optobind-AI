@@ -76,6 +76,8 @@ class ValidationResult:
     delta_sasa         : float = 0.0     # Surface enfouie à l'interface (ΔSASA en Å²)
     solubility_score   : float | None = None  # Score mis à l'échelle Protein-Sol (> 0.45)
     solubility_percent : float | None = None  # % de solubilité estimé Protein-Sol
+    n_unpaired_cys     : int = 0              # Nombre de cystéines orphelines (non coordonnées / non pontées)
+    unpaired_details   : str = ""             # Détail des cystéines libres (ex: C4(exp:29Å²))
     passed             : bool  = False
     metadata           : dict  = field(default_factory=dict)
 
@@ -86,13 +88,16 @@ class ValidationResult:
         *,
         rmsd_threshold: float | None = None,
         plddt_threshold: float | None = None,
+        max_unpaired_cys: int | None = 0,
     ) -> bool:
         """Applique les critères de succès et met à jour ``passed``."""
         r_thresh = rmsd_threshold if rmsd_threshold is not None else rmsd_thresh
         p_thresh = plddt_threshold if plddt_threshold is not None else plddt_thresh
+        cys_ok = (self.n_unpaired_cys <= max_unpaired_cys) if max_unpaired_cys is not None else True
         self.passed = (
-            self.rmsd        < r_thresh  and
-            self.plddt_mean  > p_thresh
+            self.rmsd             < r_thresh   and
+            self.plddt_mean       > p_thresh   and
+            cys_ok
         )
         return self.passed
 

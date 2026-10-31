@@ -191,3 +191,142 @@ def annotate_top_candidates_solubility(
         else:
             cand.solubility_score = None
             cand.solubility_percent = None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Analyse des cystéines orphelines (Unpaired / Free Cysteines)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def analyze_cysteines(
+    pdb_path: Path | str | None,
+    metal_cutoff: float = 3.2,
+    disulfide_cutoff: float = 3.0,
+    logger: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """
+    Analyse les résidus CYS dans la structure 3D pour détecter les cystéines orphelines.
+
+    Une cystéine est considérée comme 'sécurisée' si :
+      1. Elle coordonne un ion métallique (SG à <= metal_cutoff Å d'un ion Zn²⁺, Fe, Cu...).
+      2. Elle forme un pont disulfure structural (SG à <= disulfide_cutoff Å d'un autre CYS).
+    
+    Toute autre cystéine est classée comme 'orpheline' (unpaired), avec indication
+    de son exposition au solvant (SASA) :
+      - Exposée (SASA >= 10 Å²) : risque maximal d'oxydation et d'agrégation intermoléculaire.
+      - Enfouie (SASA < 10 Å²) : enfouie dans le cœur, risque moindre mais déstabilisant.
+
+    Parameters
+    ----------
+    pdb_path         : Chemin vers le fichier PDB ou mmCIF.
+    metal_cutoff     : Distance max SG - métal pour la coordination (Å, défaut 3.2).
+    disulfide_cutoff : Distance max SG - SG pour un pont disulfure (Å, défaut 3.0).
+    logger           : Logger partagé.
+
+    Returns
+    -------
+    dict avec 'total_cys', 'metal_coord', 'disulfides', 'unpaired_cys', 'n_unpaired', 'details'.
+    """
+    _log = logger or log
+    default_result: dict[str, Any] = {
+        "total_cys": 0,
+        "metal_coord": [],
+        "disulfides": [],
+        "unpaired_cys": [],
+        "n_unpaired": 0,
+        "details": "-",
+    }
+
+    if not pdb_path:
+        return default_result
+
+    path = Path(pdb_path)
+    if not path.is_file():
+        return default_result
+
+    try:
+        from Bio.PDB import PDBParser, MMCIFParser
+        from Bio.PDB.SASA import ShrakeRupley
+
+        is_cif = path.suffix.lower() in [".cif", ".mmcif"]
+        parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
+        structure = parser.get_structure("pred_struct", str(path))
+
+        # Calcul SASA au niveau résidu
+        try:
+            sr = ShrakeRupley()
+            sr.compute(structure, level="R")
+        except Exception:
+            pass
+
+        # 1. Extraction des atomes métalliques (hors acides aminés standards)
+        std_aa = {
+            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+            "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+        }
+        metal_elements = {"ZN", "FE", "CU", "MG", "MN", "NI", "CO", "CD", "CA"}
+        metal_atoms = []
+        for atom in structure.get_atoms():
+            if atom.parent.resname.upper() in std_aa:
+                continue
+            elem = atom.element.strip().upper() if atom.element else ""
+            name = atom.name.strip().upper()
+            if elem in metal_elements or any(name.startswith(m) for m in ["ZN", "FE", "CU", "MG", "MN", "NI", "CO", "CD"]):
+                metal_atoms.append(atom)
+
+        # 2. Identification des résidus CYS
+        cys_residues = [r for r in structure.get_residues() if r.resname.upper() == "CYS"]
+        if not cys_residues:
+            return default_result
+
+        # 3. Détection des Cys coordinant un métal
+        metal_coord: set[int] = set()
+        for r in cys_residues:
+            if "SG" in r:
+                for m in metal_atoms:
+                    if (r["SG"] - m) <= metal_cutoff:
+                        metal_coord.add(r.id[1])
+                        break
+
+        # 4. Détection des ponts disulfures entre Cys restantes
+        paired_cys = set(metal_coord)
+        disulfides: list[tuple[int, int]] = []
+        remaining = [r for r in cys_residues if r.id[1] not in paired_cys and "SG" in r]
+
+        for i in range(len(remaining)):
+            r1 = remaining[i]
+            if r1.id[1] in paired_cys:
+                continue
+            for j in range(i + 1, len(remaining)):
+                r2 = remaining[j]
+                if r2.id[1] in paired_cys:
+                    continue
+                if (r1["SG"] - r2["SG"]) <= disulfide_cutoff:
+                    disulfides.append((r1.id[1], r2.id[1]))
+                    paired_cys.add(r1.id[1])
+                    paired_cys.add(r2.id[1])
+                    break
+
+        # 5. Détection des Cys orphelines (libres)
+        unpaired: list[int] = [r.id[1] for r in cys_residues if r.id[1] not in paired_cys]
+
+        details_list = []
+        for r in cys_residues:
+            if r.id[1] in unpaired:
+                sasa = getattr(r, "sasa", 0.0)
+                tag = "exp" if sasa >= 10.0 else "bur"
+                details_list.append(f"C{r.id[1]}({tag}:{sasa:.0f}Å²)")
+
+        details_str = ", ".join(details_list) if details_list else "-"
+
+        return {
+            "total_cys": len(cys_residues),
+            "metal_coord": sorted(metal_coord),
+            "disulfides": disulfides,
+            "unpaired_cys": unpaired,
+            "n_unpaired": len(unpaired),
+            "details": details_str,
+        }
+
+    except Exception as exc:
+        _log.debug("[BIOPHYSICS] Erreur lors de l'analyse des cystéines : %s", exc)
+        return default_result

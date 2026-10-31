@@ -47,6 +47,8 @@ _CSV_HEADERS = [
     "pae_inter",
     "sasa",
     "delta_sasa",
+    "n_unpaired_cys",
+    "unpaired_cys_details",
     "rmsd_angstrom",
     "n_steric_clashes",
     "passed",
@@ -110,9 +112,11 @@ def build_report(
             "ptm"               : f"{val.ptm:.4f}"           if val else "N/A",
             "iptm"              : f"{val.iptm:.4f}"          if val else "N/A",
             "pae_inter"         : f"{val.pae_inter:.2f}"     if val else "N/A",
-            "sasa"              : f"{val.sasa:.1f}"          if val else "N/A",
-            "delta_sasa"        : f"{val.delta_sasa:.1f}"    if val else "N/A",
-            "rmsd_angstrom"     : f"{val.rmsd:.4f}"          if val else "N/A",
+            "sasa"                : f"{val.sasa:.1f}"          if val else "N/A",
+            "delta_sasa"          : f"{val.delta_sasa:.1f}"    if val else "N/A",
+            "n_unpaired_cys"      : str(val.n_unpaired_cys)    if val else "N/A",
+            "unpaired_cys_details": val.unpaired_details       if val else "N/A",
+            "rmsd_angstrom"       : f"{val.rmsd:.4f}"          if val else "N/A",
             "n_steric_clashes"  : str(val.n_clashes)         if val else "N/A",
             "passed"            : str(val.passed)            if val else "N/A",
             "scaffold_pdb"      : str(seq.scaffold.pdb_path),
@@ -182,22 +186,22 @@ def print_summary(
     n_fail = len(validation_results) - n_pass
     n_no_val = len(sequences) - len(validation_results)
 
-    sep = "-" * 115
+    sep = "-" * 122
 
-    _print(f"\n{BOLD}{'=' * 115}{RESET}")
+    _print(f"\n{BOLD}{'=' * 122}{RESET}")
     _print(f"{BOLD}  RESUME OptoBind-AI{RESET}")
     _print(f"{sep}")
     _print(f"  Squelettes generes  : {len(scaffolds)}")
     _print(f"  Sequences optimisees: {len(sequences)}")
     _print(f"  Variants valides    : {GREEN}{n_pass} PASS{RESET}  /  {RED}{n_fail} FAIL{RESET}"
            + (f"  /  {YELLOW}{n_no_val} non valides{RESET}" if n_no_val else ""))
-    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A")
+    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A  |  Cys orphelines = 0")
     _print(f"{sep}")
 
     if validation_results:
         header = (
-            f"  {'Variant':<35} {'pLDDT':>6} {'pTM':>5} {'ipTM':>5} {'PAE':>5} {'dSASA':>6} "
-            f"{'pI':>5} {'GRAVY':>6} {'Solub.':>6} {'RMSD':>6} {'Clash':>5} {'Status':>7}"
+            f"  {'Variant':<34} {'pLDDT':>6} {'pTM':>5} {'ipTM':>5} {'PAE':>5} {'dSASA':>6} "
+            f"{'pI':>5} {'GRAVY':>6} {'Solub':>6} {'CysFree':>8} {'RMSD':>6} {'Clash':>5} {'Status':>7}"
         )
         _print(header)
         _print(f"  {sep[2:]}")
@@ -205,10 +209,11 @@ def print_summary(
             color  = GREEN if v.passed else RED
             status = "PASS OK" if v.passed else "FAIL  X"
             sol_str = f"{v.solubility_score:.2f}" if v.solubility_score is not None else "-"
+            cys_str = "0" if v.n_unpaired_cys == 0 else f"{v.n_unpaired_cys} ({v.unpaired_details.split('(')[0]})"
             _print(
-                f"  {v.sequence.name:<35} {v.plddt_mean:>6.1f} "
+                f"  {v.sequence.name:<34} {v.plddt_mean:>6.1f} "
                 f"{v.ptm:>5.2f} {v.iptm:>5.2f} {v.pae_inter:>5.1f} {v.delta_sasa:>6.0f} "
-                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>6.2f} {sol_str:>6} "
+                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>6.2f} {sol_str:>6} {cys_str:>8} "
                 f"{v.rmsd:>6.2f} {v.n_clashes:>5d} "
                 f"{color}{status:>7}{RESET}"
             )
@@ -218,4 +223,4 @@ def print_summary(
     _print(f"{sep}")
     _print(f"  Rapport CSV   : {report_path}")
     _print(f"  Rapport Excel : {report_path.with_suffix('.xlsx')}")
-    _print(f"{'=' * 115}{RESET}\n")
+    _print(f"{'=' * 122}{RESET}\n")

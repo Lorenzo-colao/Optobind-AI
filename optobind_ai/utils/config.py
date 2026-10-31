@@ -58,6 +58,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "rmsd_threshold"      : 2.0,   # Å
         "plddt_threshold"     : 90.0,  # score AlphaFold
         "clash_vdw_cutoff"    : 0.6,   # fraction de rayon de Van der Waals
+        "max_unpaired_cys"    : 0,     # Nombre maximal de cystéines orphelines (0 = tolérance zéro)
     },
 }
 

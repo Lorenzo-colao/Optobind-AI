@@ -30,6 +30,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+from optobind_ai.modules.biophysics import analyze_cysteines
 from optobind_ai.utils.io_helpers import DesignedSequence, ValidationResult
 
 
@@ -134,8 +135,8 @@ def run_alphafold(
         if hasattr(seq_iter, "set_postfix_str"):
             seq_iter.set_postfix_str(f"{seq.name.split('_')[-2]}_{seq.name.split('_')[-1]} {status} (pLDDT={res.plddt_mean:.1f})")
         logger.info(
-            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  RMSD=%.2f Å  clashes=%d",
-            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.rmsd, res.n_clashes,
+            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  RMSD=%.2f Å  clashes=%d  cys_free=%d",
+            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.rmsd, res.n_clashes, res.n_unpaired_cys,
         )
 
     return results
@@ -198,26 +199,30 @@ def _predict_and_validate(
     from optobind_ai.utils.config import DEFAULT_CONFIG
     rmsd_thresh  = DEFAULT_CONFIG["validation"]["rmsd_threshold"]
     plddt_thresh = DEFAULT_CONFIG["validation"]["plddt_threshold"]
+    max_cys      = DEFAULT_CONFIG["validation"].get("max_unpaired_cys", 0)
 
     ptm, iptm = _parse_chai_tm_scores(output_dir / seq.name, logger)
     pae_mean, pae_inter = _parse_chai_pae(output_dir / seq.name, len(seq.sequence), logger)
     sasa, delta_sasa = _compute_sasa(predicted_pdb, logger)
+    cys_info = analyze_cysteines(predicted_pdb, logger=logger)
 
     result = ValidationResult(
-        sequence     = seq,
-        pdb_path     = predicted_pdb,
-        plddt_mean   = plddt_mean,
-        plddt_pocket = plddt_pocket,
-        rmsd         = rmsd,
-        n_clashes    = n_clashes,
-        ptm          = ptm,
-        iptm         = iptm,
-        pae_mean     = pae_mean,
-        pae_inter    = pae_inter,
-        sasa         = sasa,
-        delta_sasa   = delta_sasa,
+        sequence         = seq,
+        pdb_path         = predicted_pdb,
+        plddt_mean       = plddt_mean,
+        plddt_pocket     = plddt_pocket,
+        rmsd             = rmsd,
+        n_clashes        = n_clashes,
+        ptm              = ptm,
+        iptm             = iptm,
+        pae_mean         = pae_mean,
+        pae_inter        = pae_inter,
+        sasa             = sasa,
+        delta_sasa       = delta_sasa,
+        n_unpaired_cys   = cys_info["n_unpaired"],
+        unpaired_details = cys_info["details"],
     )
-    result.validate(rmsd_thresh, plddt_thresh)
+    result.validate(rmsd_thresh, plddt_thresh, max_unpaired_cys=max_cys)
     return result
 
 
@@ -263,26 +268,30 @@ def _evaluate_single_prediction(
     from optobind_ai.utils.config import DEFAULT_CONFIG
     rmsd_thresh  = cfg.get("rmsd_threshold", DEFAULT_CONFIG["validation"]["rmsd_threshold"])
     plddt_thresh = cfg.get("plddt_threshold", DEFAULT_CONFIG["validation"]["plddt_threshold"])
+    max_cys      = cfg.get("max_unpaired_cys", DEFAULT_CONFIG["validation"].get("max_unpaired_cys", 0))
 
     ptm, iptm = _parse_chai_tm_scores(out_dir, logger)
     pae_mean, pae_inter = _parse_chai_pae(out_dir, len(seq.sequence), logger)
     sasa, delta_sasa = _compute_sasa(pred_pdb, logger)
+    cys_info = analyze_cysteines(pred_pdb, logger=logger)
 
     res = ValidationResult(
-        sequence     = seq,
-        pdb_path     = pred_pdb,
-        plddt_mean   = plddt_mean,
-        plddt_pocket = plddt_pocket,
-        rmsd         = rmsd,
-        n_clashes    = n_clashes,
-        ptm          = ptm,
-        iptm         = iptm,
-        pae_mean     = pae_mean,
-        pae_inter    = pae_inter,
-        sasa         = sasa,
-        delta_sasa   = delta_sasa,
+        sequence         = seq,
+        pdb_path         = pred_pdb,
+        plddt_mean       = plddt_mean,
+        plddt_pocket     = plddt_pocket,
+        rmsd             = rmsd,
+        n_clashes        = n_clashes,
+        ptm              = ptm,
+        iptm             = iptm,
+        pae_mean         = pae_mean,
+        pae_inter        = pae_inter,
+        sasa             = sasa,
+        delta_sasa       = delta_sasa,
+        n_unpaired_cys   = cys_info["n_unpaired"],
+        unpaired_details = cys_info["details"],
     )
-    res.validate(rmsd_thresh, plddt_thresh)
+    res.validate(rmsd_thresh, plddt_thresh, max_unpaired_cys=max_cys)
     return res
 
 
@@ -1194,19 +1203,21 @@ def _dry_run_validation(
     n_clashes    = random.randint(0, 3)
 
     result = ValidationResult(
-        sequence     = seq,
-        pdb_path     = None,
-        plddt_mean   = plddt_mean,
-        plddt_pocket = plddt_pocket,
-        rmsd         = rmsd,
-        n_clashes    = n_clashes,
-        ptm          = ptm,
-        iptm         = iptm,
-        pae_mean     = pae_mean,
-        pae_inter    = pae_inter,
-        sasa         = sasa,
-        delta_sasa   = delta_sasa,
-        metadata     = {"dry_run": True},
+        sequence         = seq,
+        pdb_path         = None,
+        plddt_mean       = plddt_mean,
+        plddt_pocket     = plddt_pocket,
+        rmsd             = rmsd,
+        n_clashes        = n_clashes,
+        ptm              = ptm,
+        iptm             = iptm,
+        pae_mean         = pae_mean,
+        pae_inter        = pae_inter,
+        sasa             = sasa,
+        delta_sasa       = delta_sasa,
+        n_unpaired_cys   = 0,
+        unpaired_details = "-",
+        metadata         = {"dry_run": True},
     )
-    result.validate(rmsd_threshold=2.0, plddt_threshold=90.0)
+    result.validate(rmsd_threshold=2.0, plddt_threshold=90.0, max_unpaired_cys=0)
     return result
