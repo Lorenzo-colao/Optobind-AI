@@ -330,3 +330,115 @@ def analyze_cysteines(
     except Exception as exc:
         _log.debug("[BIOPHYSICS] Erreur lors de l'analyse des cystéines : %s", exc)
         return default_result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Analyse des interactions à l'interface (Liaisons H et Ponts Salins)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def analyze_interface_interactions(
+    pdb_path: Path | str | None,
+    hbond_cutoff: float = 3.5,
+    salt_bridge_cutoff: float = 4.0,
+    logger: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """
+    Détecte et quantifie les liaisons hydrogène (H-bonds) et les ponts salins (salt bridges)
+    formés à l'interface entre la protéine de novo (Chaîne principale) et ses partenaires
+    (cible, récepteur ou ligand/fluorophore).
+
+    Critères géométriques :
+      - Liaisons hydrogène : Atomes électronégatifs donneur/accepteur (N, O, S) séparés par <= 3.5 Å.
+      - Ponts salins       : Oxygène anionique (Asp/Glu) et azote cationique (Lys/Arg/His) séparés par <= 4.0 Å.
+
+    Parameters
+    ----------
+    pdb_path           : Chemin du fichier PDB/CIF du complexe.
+    hbond_cutoff       : Distance maximale pour liaison H (Å, défaut 3.5).
+    salt_bridge_cutoff : Distance maximale pour pont salin (Å, défaut 4.0).
+    logger             : Logger partagé.
+
+    Returns
+    -------
+    dict avec 'n_hbonds', 'n_salt_bridges', 'hbonds_details', 'salt_bridges_details'.
+    """
+    _log = logger or log
+    default_result: dict[str, Any] = {
+        "n_hbonds": 0,
+        "n_salt_bridges": 0,
+        "hbonds_details": [],
+        "salt_bridges_details": [],
+    }
+
+    if not pdb_path:
+        return default_result
+
+    path = Path(pdb_path)
+    if not path.is_file():
+        return default_result
+
+    try:
+        from Bio.PDB import PDBParser, MMCIFParser
+        import numpy as np
+
+        is_cif = path.suffix.lower() in [".cif", ".mmcif"]
+        parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
+        structure = parser.get_structure("complex", str(path))
+        if len(structure) == 0:
+            return default_result
+
+        model = structure[0]
+        chains = list(model.get_chains())
+        if len(chains) <= 1:
+            return default_result
+
+        # Chaîne A = binder / chaîne principale ; autres chaînes = cible, ligand, cofacteur
+        prot_chain = chains[0]
+        other_chains = chains[1:]
+
+        prot_atoms = list(prot_chain.get_atoms())
+        other_atoms = [a for ch in other_chains for a in ch.get_atoms()]
+
+        # 1. Liaisons hydrogène à l'interface (Donneurs/Accepteurs N, O, S)
+        prot_polar = [a for a in prot_atoms if a.element in {"N", "O", "S"}]
+        other_polar = [a for a in other_atoms if a.element in {"N", "O", "S"}]
+
+        hbonds = []
+        for pa in prot_polar:
+            for oa in other_polar:
+                d = float(np.linalg.norm(pa.coord - oa.coord))
+                if d <= hbond_cutoff:
+                    pr = pa.parent
+                    opr = oa.parent
+                    hbonds.append(f"{pr.resname}{pr.id[1]}:{pa.name}--{opr.resname}{opr.id[1]}:{oa.name} ({d:.1f}Å)")
+
+        # 2. Ponts salins à l'interface (Anion: Asp/Glu, Cation: Lys/Arg/His)
+        anion_p = [a for a in prot_atoms if (a.parent.resname == "ASP" and a.name in ["OD1", "OD2"]) or (a.parent.resname == "GLU" and a.name in ["OE1", "OE2"])]
+        cation_p = [a for a in prot_atoms if (a.parent.resname == "LYS" and a.name == "NZ") or (a.parent.resname == "ARG" and a.name in ["NH1", "NH2", "NE"]) or (a.parent.resname == "HIS" and a.name in ["ND1", "NE2"])]
+
+        anion_o = [a for a in other_atoms if (a.parent.resname == "ASP" and a.name in ["OD1", "OD2"]) or (a.parent.resname == "GLU" and a.name in ["OE1", "OE2"])]
+        cation_o = [a for a in other_atoms if (a.parent.resname == "LYS" and a.name == "NZ") or (a.parent.resname == "ARG" and a.name in ["NH1", "NH2", "NE"]) or (a.parent.resname == "HIS" and a.name in ["ND1", "NE2"])]
+
+        salt_bridges = []
+        for ca in cation_p:
+            for aa in anion_o:
+                d = float(np.linalg.norm(ca.coord - aa.coord))
+                if d <= salt_bridge_cutoff:
+                    salt_bridges.append(f"{ca.parent.resname}{ca.parent.id[1]}:{ca.name}--{aa.parent.resname}{aa.parent.id[1]}:{aa.name} ({d:.1f}Å)")
+
+        for aa in anion_p:
+            for ca in cation_o:
+                d = float(np.linalg.norm(aa.coord - ca.coord))
+                if d <= salt_bridge_cutoff:
+                    salt_bridges.append(f"{aa.parent.resname}{aa.parent.id[1]}:{aa.name}--{ca.parent.resname}{ca.parent.id[1]}:{ca.name} ({d:.1f}Å)")
+
+        return {
+            "n_hbonds": len(hbonds),
+            "n_salt_bridges": len(salt_bridges),
+            "hbonds_details": hbonds,
+            "salt_bridges_details": salt_bridges,
+        }
+
+    except Exception as exc:
+        _log.debug("[BIOPHYSICS] Erreur lors de l'analyse des interactions d'interface : %s", exc)
+        return default_result

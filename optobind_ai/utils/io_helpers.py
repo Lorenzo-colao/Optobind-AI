@@ -72,13 +72,15 @@ class ValidationResult:
     iptm               : float = 0.0     # interface predicted TM-score (complexe / ligand)
     pae_mean           : float = 0.0     # PAE moyen global (Å)
     pae_inter          : float = 0.0     # PAE inter-domaines / inter-chaînes (Å)
-    sasa                 : float = 0.0     # Surface accessible au solvant totale (Å²)
-    delta_sasa           : float = 0.0     # Surface enfouie à l'interface (ΔSASA en Å²)
-    hydrophobic_sasa_pct : float = 0.0     # Pourcentage de surface hydrophobe (V, L, I, F, W, M)
-    solubility_score     : float | None = None  # Score mis à l'échelle Protein-Sol (> 0.45)
-    solubility_percent   : float | None = None  # % de solubilité estimé Protein-Sol
-    n_unpaired_cys       : int = 0              # Nombre de cystéines orphelines (non coordonnées / non pontées)
-    unpaired_details     : str = ""             # Détail des cystéines libres (ex: C4(exp:29Å²))
+    sasa                     : float = 0.0     # Surface accessible au solvant totale (Å²)
+    delta_sasa               : float = 0.0     # Surface enfouie à l'interface (ΔSASA en Å²)
+    hydrophobic_sasa_pct     : float = 0.0     # Pourcentage de surface hydrophobe (V, L, I, F, W, M)
+    n_interface_hbonds       : int = 0         # Nombre de liaisons H à l'interface (d <= 3.5 Å)
+    n_interface_salt_bridges : int = 0         # Nombre de ponts salins à l'interface (d <= 4.0 Å)
+    solubility_score         : float | None = None  # Score mis à l'échelle Protein-Sol (> 0.45)
+    solubility_percent       : float | None = None  # % de solubilité estimé Protein-Sol
+    n_unpaired_cys           : int = 0              # Nombre de cystéines orphelines (non coordonnées / non pontées)
+    unpaired_details         : str = ""             # Détail des cystéines libres (ex: C4(exp:29Å²))
     passed               : bool  = False
     metadata             : dict  = field(default_factory=dict)
 
