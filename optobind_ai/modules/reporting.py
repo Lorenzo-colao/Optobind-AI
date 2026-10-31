@@ -38,6 +38,7 @@ _CSV_HEADERS = [
     "plddt_pocket",
     "ptm",
     "iptm",
+    "pae_inter",
     "sasa",
     "delta_sasa",
     "rmsd_angstrom",
@@ -96,6 +97,7 @@ def build_report(
             "plddt_pocket"      : f"{val.plddt_pocket:.2f}"  if val else "N/A",
             "ptm"               : f"{val.ptm:.4f}"           if val else "N/A",
             "iptm"              : f"{val.iptm:.4f}"          if val else "N/A",
+            "pae_inter"         : f"{val.pae_inter:.2f}"     if val else "N/A",
             "sasa"              : f"{val.sasa:.1f}"          if val else "N/A",
             "delta_sasa"        : f"{val.delta_sasa:.1f}"    if val else "N/A",
             "rmsd_angstrom"     : f"{val.rmsd:.4f}"          if val else "N/A",
@@ -168,9 +170,9 @@ def print_summary(
     n_fail = len(validation_results) - n_pass
     n_no_val = len(sequences) - len(validation_results)
 
-    sep = "-" * 94
+    sep = "-" * 102
 
-    _print(f"\n{BOLD}{'=' * 94}{RESET}")
+    _print(f"\n{BOLD}{'=' * 102}{RESET}")
     _print(f"{BOLD}  RESUME OptoBind-AI{RESET}")
     _print(f"{sep}")
     _print(f"  Squelettes generes  : {len(scaffolds)}")
@@ -182,7 +184,7 @@ def print_summary(
 
     if validation_results:
         header = (
-            f"  {'Variant':<35} {'pLDDT':>7} {'pTM':>6} {'ipTM':>6} {'dSASA':>7} {'RMSD(A)':>8} "
+            f"  {'Variant':<35} {'pLDDT':>7} {'pTM':>6} {'ipTM':>6} {'PAE(A)':>7} {'dSASA':>7} {'RMSD(A)':>8} "
             f"{'Clashes':>8} {'Status':>7}"
         )
         _print(header)
@@ -192,7 +194,7 @@ def print_summary(
             status = "PASS OK" if v.passed else "FAIL  X"
             _print(
                 f"  {v.sequence.name:<35} {v.plddt_mean:>7.2f} "
-                f"{v.ptm:>6.3f} {v.iptm:>6.3f} {v.delta_sasa:>7.0f} "
+                f"{v.ptm:>6.3f} {v.iptm:>6.3f} {v.pae_inter:>7.2f} {v.delta_sasa:>7.0f} "
                 f"{v.rmsd:>8.3f} {v.n_clashes:>8d} "
                 f"{color}{status:>7}{RESET}"
             )
@@ -202,4 +204,4 @@ def print_summary(
     _print(f"{sep}")
     _print(f"  Rapport CSV   : {report_path}")
     _print(f"  Rapport Excel : {report_path.with_suffix('.xlsx')}")
-    _print(f"{'=' * 94}{RESET}\n")
+    _print(f"{'=' * 102}{RESET}\n")

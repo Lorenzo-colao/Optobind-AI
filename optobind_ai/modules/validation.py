@@ -134,8 +134,8 @@ def run_alphafold(
         if hasattr(seq_iter, "set_postfix_str"):
             seq_iter.set_postfix_str(f"{seq.name.split('_')[-2]}_{seq.name.split('_')[-1]} {status} (pLDDT={res.plddt_mean:.1f})")
         logger.info(
-            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  ΔSASA=%.0f Å²  RMSD=%.2f Å  clashes=%d",
-            status, res.plddt_mean, res.ptm, res.iptm, res.delta_sasa, res.rmsd, res.n_clashes,
+            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  RMSD=%.2f Å  clashes=%d",
+            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.rmsd, res.n_clashes,
         )
 
     return results
@@ -200,6 +200,7 @@ def _predict_and_validate(
     plddt_thresh = DEFAULT_CONFIG["validation"]["plddt_threshold"]
 
     ptm, iptm = _parse_chai_tm_scores(output_dir / seq.name, logger)
+    pae_mean, pae_inter = _parse_chai_pae(output_dir / seq.name, len(seq.sequence), logger)
     sasa, delta_sasa = _compute_sasa(predicted_pdb, logger)
 
     result = ValidationResult(
@@ -211,6 +212,8 @@ def _predict_and_validate(
         n_clashes    = n_clashes,
         ptm          = ptm,
         iptm         = iptm,
+        pae_mean     = pae_mean,
+        pae_inter    = pae_inter,
         sasa         = sasa,
         delta_sasa   = delta_sasa,
     )
@@ -262,6 +265,7 @@ def _evaluate_single_prediction(
     plddt_thresh = cfg.get("plddt_threshold", DEFAULT_CONFIG["validation"]["plddt_threshold"])
 
     ptm, iptm = _parse_chai_tm_scores(out_dir, logger)
+    pae_mean, pae_inter = _parse_chai_pae(out_dir, len(seq.sequence), logger)
     sasa, delta_sasa = _compute_sasa(pred_pdb, logger)
 
     res = ValidationResult(
@@ -273,6 +277,8 @@ def _evaluate_single_prediction(
         n_clashes    = n_clashes,
         ptm          = ptm,
         iptm         = iptm,
+        pae_mean     = pae_mean,
+        pae_inter    = pae_inter,
         sasa         = sasa,
         delta_sasa   = delta_sasa,
     )
@@ -387,6 +393,15 @@ for i, t in enumerate(task_list, 1):
                 use_esm_embeddings={use_esm},
                 low_memory=not is_high_vram,
             )
+            # Sauvegarder la matrice PAE (Predicted Aligned Error) pour analyse inter-domaines
+            try:
+                if hasattr(cands, "pae") and cands.pae is not None:
+                    import numpy as _np
+                    pae_tensor = cands.pae.detach().cpu().numpy()
+                    pae_mat = pae_tensor[0] if pae_tensor.ndim == 3 else pae_tensor
+                    _np.save(out_p / "pae.npy", pae_mat.astype(_np.float32))
+            except Exception:
+                pass
             elapsed = time.time() - t0
             print(f"CHAI1_ITEM_DONE: {{i}}/{{len(task_list)}}:{{name}}:{{elapsed:.1f}}", flush=True)
             break
@@ -467,8 +482,8 @@ sys.exit(0)
                     evaluated_results[item_name] = res
                     status = "✓ PASS" if res.passed else "✗ FAIL"
                     logger.info(
-                        "     ✓ [Chai-1 %s] %s replié%s → %s  |  pLDDT=%.1f  |  pTM=%.3f  |  ipTM=%.3f  |  ΔSASA=%.0f Å²  |  RMSD=%.2f Å  |  clashes=%d",
-                        progress, item_name, dur_str, status, res.plddt_mean, res.ptm, res.iptm, res.delta_sasa, res.rmsd, res.n_clashes,
+                        "     ✓ [Chai-1 %s] %s replié%s → %s  |  pLDDT=%.1f  |  pTM=%.3f  |  ipTM=%.3f  |  PAE=%.1f Å  |  ΔSASA=%.0f Å²  |  RMSD=%.2f Å  |  clashes=%d",
+                        progress, item_name, dur_str, status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.rmsd, res.n_clashes,
                     )
                 else:
                     logger.info("     ✓ [Chai-1 %s] %s replié%s !", progress, item_name, dur_str)
@@ -576,6 +591,14 @@ for attempt in range(1, max_retries + 1):
             use_esm_embeddings={use_esm},
             low_memory=not is_high_vram,
         )
+        try:
+            if hasattr(cands, "pae") and cands.pae is not None:
+                import numpy as _np
+                pae_tensor = cands.pae.detach().cpu().numpy()
+                pae_mat = pae_tensor[0] if pae_tensor.ndim == 3 else pae_tensor
+                _np.save(out_p / "pae.npy", pae_mat.astype(_np.float32))
+        except Exception:
+            pass
         print("CHAI1_DONE")
         sys.exit(0)
     except Exception as exc:
@@ -1056,6 +1079,57 @@ def _parse_chai_tm_scores(out_dir: Path, logger: logging.Logger) -> tuple[float,
     return ptm, iptm
 
 
+def _parse_chai_pae(
+    out_dir: Path,
+    prot_len: int,
+    logger: logging.Logger | None = None,
+) -> tuple[float, float]:
+    """
+    Extrait les métriques PAE (Predicted Aligned Error) depuis pae.npy.
+
+    Returns
+    -------
+    tuple[float, float]
+        (pae_global_moyen_Å, pae_inter_domaines_ou_inter_chaines_Å)
+    """
+    pae_file = out_dir / "pae.npy"
+    if not pae_file.exists():
+        candidates = list(out_dir.glob("pae*.npy"))
+        if candidates:
+            pae_file = candidates[0]
+
+    if pae_file.exists():
+        try:
+            import numpy as _np
+            pae_mat = _np.load(pae_file)
+            if pae_mat.ndim == 3:
+                pae_mat = pae_mat[0]
+
+            pae_mean = round(float(pae_mat.mean()), 2)
+            n_tokens = pae_mat.shape[0]
+
+            # Si le complexe comporte un ligand ou un partenaire (N > prot_len)
+            if 0 < prot_len < n_tokens:
+                block_a = pae_mat[:prot_len, prot_len:]
+                block_b = pae_mat[prot_len:, :prot_len]
+                pae_inter = round(float((block_a.mean() + block_b.mean()) / 2.0), 2)
+            elif n_tokens > 10:
+                # Monomère pur : évaluer l'orientation relative entre la moitié N-ter et C-ter
+                half = n_tokens // 2
+                block_a = pae_mat[:half, half:]
+                block_b = pae_mat[half:, :half]
+                pae_inter = round(float((block_a.mean() + block_b.mean()) / 2.0), 2)
+            else:
+                pae_inter = pae_mean
+
+            return pae_mean, pae_inter
+        except Exception as exc:
+            if logger:
+                logger.debug("[PAE] Erreur lecture matrice PAE : %s", exc)
+
+    return 0.0, 0.0
+
+
 def _sdf_to_smiles(ligand_file: Path, logger: logging.Logger) -> str:
     """
     Convertit un SDF en SMILES via RDKit (si disponible),
@@ -1112,6 +1186,8 @@ def _dry_run_validation(
     plddt_pocket = round(random.uniform(70.0, 99.0), 2)
     ptm          = round(random.uniform(0.70, 0.95), 3)
     iptm         = round(random.uniform(0.60, 0.90), 3)
+    pae_mean     = round(random.uniform(2.5, 6.0), 2)
+    pae_inter    = round(random.uniform(3.0, 7.5), 2)
     sasa         = round(random.uniform(4500.0, 6500.0), 1)
     delta_sasa   = round(random.uniform(500.0, 950.0), 1)
     rmsd         = round(random.uniform(0.5, 3.5),   3)
@@ -1126,6 +1202,8 @@ def _dry_run_validation(
         n_clashes    = n_clashes,
         ptm          = ptm,
         iptm         = iptm,
+        pae_mean     = pae_mean,
+        pae_inter    = pae_inter,
         sasa         = sasa,
         delta_sasa   = delta_sasa,
         metadata     = {"dry_run": True},
