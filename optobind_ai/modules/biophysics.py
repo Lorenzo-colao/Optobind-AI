@@ -842,6 +842,7 @@ def ensure_metal_coordination_conect(
 
     metals = []
     coord_candidates = []
+    lig_atoms = []
     existing_conect = set()
     existing_links = []
 
@@ -875,6 +876,8 @@ def ensure_metal_coordination_conect(
                     "serial": serial, "name": name, "res_name": res_name,
                     "chain": chain, "res_seq": res_seq, "pos": pos,
                 })
+            elif line.startswith("HETATM") and not is_metal:
+                lig_atoms.append((serial, pos))
             elif (res_name == "CYS" and name == "SG") or \
                  (res_name == "HIS" and name in ["NE2", "ND1"]) or \
                  (res_name == "ASP" and name in ["OD1", "OD2"]) or \
@@ -888,6 +891,7 @@ def ensure_metal_coordination_conect(
     new_conects = []
     bonds_count = 0
 
+    # Coordination métallique (Zn2+, etc.)
     for m in metals:
         bonded_serials = []
         for c in coord_candidates:
@@ -908,24 +912,24 @@ def ensure_metal_coordination_conect(
                 s_str = "".join(f"{s:5d}" for s in chunk)
                 new_conects.append(f"CONECT{m['serial']:5d}{s_str}")
 
-    # Transférer les CONECT du ligand organique depuis target_pdb si présent
-    if target_pdb:
-        t_path = Path(target_pdb)
-        if t_path.is_file():
-            t_lines = t_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-            # Chercher le serial de départ du ligand dans target et dans pred
-            t_lig_serials = [int(l[6:11]) for l in t_lines if l.startswith("HETATM") and l[21] == "B"]
-            p_lig_serials = [int(l[6:11]) for l in lines if l.startswith("HETATM") and l[21] == "B"]
-            if t_lig_serials and p_lig_serials:
-                offset = min(p_lig_serials) - min(t_lig_serials)
-                min_t, max_t = min(t_lig_serials), max(t_lig_serials)
-                for l in t_lines:
-                    if l.startswith("CONECT"):
-                        parts = [int(p) for p in l.split()[1:]]
-                        if all(min_t <= p <= max_t for p in parts):
-                            shifted = [p + offset for p in parts]
-                            s_str = "".join(f"{p:5d}" for p in shifted)
-                            new_conects.append(f"CONECT{s_str}")
+    # Reconstitution universelle des liaisons covalentes du ligand organique (DFHBI-1T, etc.)
+    if lig_atoms:
+        lig_bonds = {}
+        for i in range(len(lig_atoms)):
+            for j in range(i + 1, len(lig_atoms)):
+                s1, p1 = lig_atoms[i]
+                s2, p2 = lig_atoms[j]
+                d = _np.linalg.norm(p1 - p2)
+                if 1.15 <= d <= 1.75:
+                    lig_bonds.setdefault(s1, []).append(s2)
+                    lig_bonds.setdefault(s2, []).append(s1)
+
+        for s in sorted(lig_bonds.keys()):
+            targets = sorted(lig_bonds[s])
+            for chunk_start in range(0, len(targets), 4):
+                chunk = targets[chunk_start:chunk_start + 4]
+                s_str = "".join(f"{t:5d}" for t in chunk)
+                new_conects.append(f"CONECT{s:5d}{s_str}")
 
     header = []
     body = []
