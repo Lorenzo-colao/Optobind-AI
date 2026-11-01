@@ -49,9 +49,12 @@ _CSV_HEADERS = [
     "delta_sasa",
     "hydrophobic_sasa_pct",
     "n_interface_hbonds",
+    "hbond_density",
     "n_interface_salt_bridges",
     "n_unpaired_cys",
     "unpaired_cys_details",
+    "n_liabilities",
+    "liabilities_details",
     "helix_pct",
     "beta_pct",
     "coil_pct",
@@ -126,9 +129,12 @@ def build_report(
             "delta_sasa"              : f"{val.delta_sasa:.1f}"            if val else "N/A",
             "hydrophobic_sasa_pct"    : f"{val.hydrophobic_sasa_pct:.1f}%" if val else "N/A",
             "n_interface_hbonds"      : str(val.n_interface_hbonds)        if val else "N/A",
+            "hbond_density"           : f"{val.hbond_density:.2f}"         if val else "N/A",
             "n_interface_salt_bridges": str(val.n_interface_salt_bridges)  if val else "N/A",
             "n_unpaired_cys"          : str(val.n_unpaired_cys)            if val else "N/A",
             "unpaired_cys_details"    : val.unpaired_details               if val else "N/A",
+            "n_liabilities"           : str(val.n_liabilities)             if val else "N/A",
+            "liabilities_details"     : val.liabilities_details            if val else "N/A",
             "helix_pct"               : f"{val.helix_pct:.1f}%"            if val else "N/A",
             "beta_pct"                : f"{val.beta_pct:.1f}%"             if val else "N/A",
             "coil_pct"                : f"{val.coil_pct:.1f}%"             if val else "N/A",
@@ -215,13 +221,13 @@ def print_summary(
     _print(f"  Sequences optimisees: {len(sequences)}")
     _print(f"  Variants valides    : {GREEN}{n_pass} PASS{RESET}  /  {RED}{n_fail} FAIL{RESET}"
            + (f"  /  {YELLOW}{n_no_val} non valides{RESET}" if n_no_val else ""))
-    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A  |  mRMSD <= 1.5 A  |  Cys = 0  |  %Hydro <= 35%  |  %Coil <= 45%  |  Rama <= 2%")
+    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A  |  mRMSD <= 1.5 A  |  Cys = 0  |  %Hydro <= 35%  |  %Coil <= 45%  |  Rama <= 2%  |  Liab = 0")
     _print(f"{sep}")
 
     if validation_results:
         header = (
-            f"  {'Variant':<28} {'pLDDT':>5} {'pTM':>5} {'ipTM':>5} {'PAE':>4} {'dSASA':>5} "
-            f"{'%Hyd':>5} {'HB':>2} {'SB':>2} {'pI':>5} {'GRAVY':>5} {'Solub':>5} {'SS(H/E/C)':>9} {'Rama':>5} {'Cys':>4} {'RMSD':>5} {'mRMSD':>5} {'Clash':>5} {'Status':>7}"
+            f"  {'Variant':<26} {'pLDDT':>5} {'pTM':>5} {'ipTM':>5} {'PAE':>4} {'dSASA':>5} "
+            f"{'%Hyd':>5} {'HB':>2} {'HBD':>4} {'SB':>2} {'pI':>5} {'GRAVY':>5} {'Solub':>5} {'SS(H/E/C)':>9} {'Rama':>5} {'Liab':>4} {'Cys':>4} {'RMSD':>5} {'mRMSD':>5} {'Clash':>5} {'Status':>7}"
         )
         _print(header)
         _print(f"  {sep[2:]}")
@@ -233,11 +239,13 @@ def print_summary(
             m_rmsd_str = f"{v.motif_rmsd:.2f}" if v.motif_rmsd != float("inf") else "inf"
             ss_str = f"{int(v.helix_pct):>2}/{int(v.beta_pct):>2}/{int(v.coil_pct):>2}%"
             rama_str = f"{v.ramachandran_outliers_pct:>4.1f}%"
+            liab_str = "0" if v.n_liabilities == 0 else f"{v.n_liabilities}({v.liabilities_details.split('(')[0]})"[:4]
+            hbd_str = f"{v.hbond_density:.2f}" if v.hbond_density > 0 else "0.00"
             _print(
-                f"  {v.sequence.name:<28} {v.plddt_mean:>5.1f} "
+                f"  {v.sequence.name:<26} {v.plddt_mean:>5.1f} "
                 f"{v.ptm:>5.2f} {v.iptm:>5.2f} {v.pae_inter:>4.1f} {v.delta_sasa:>5.0f} "
-                f"{v.hydrophobic_sasa_pct:>4.1f}% {v.n_interface_hbonds:>2d} {v.n_interface_salt_bridges:>2d} "
-                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>5.2f} {sol_str:>5} {ss_str:>9} {rama_str:>5} {cys_str:>4} "
+                f"{v.hydrophobic_sasa_pct:>4.1f}% {v.n_interface_hbonds:>2d} {hbd_str:>4} {v.n_interface_salt_bridges:>2d} "
+                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>5.2f} {sol_str:>5} {ss_str:>9} {rama_str:>5} {liab_str:>4} {cys_str:>4} "
                 f"{v.rmsd:>5.2f} {m_rmsd_str:>5} {v.n_clashes:>5d} "
                 f"{color}{status:>7}{RESET}"
             )

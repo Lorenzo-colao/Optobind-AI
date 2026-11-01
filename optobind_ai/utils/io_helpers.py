@@ -88,6 +88,9 @@ class ValidationResult:
     ramachandran_outliers_pct: float = 0.0          # % résidus outliers Ramachandran (< 2.0%)
     n_ramachandran_outliers  : int   = 0            # Nombre absolu d'outliers
     ramachandran_details     : str   = ""           # Détail des résidus outliers (ex: GLY28...)
+    hbond_density            : float = 0.0          # Densité de liaisons H (H-bonds par 100 Å² de ΔSASA)
+    n_liabilities            : int   = 0            # Nombre de motifs de vulnérabilité de séquence (NG, DG, DP...)
+    liabilities_details      : str   = ""           # Détail des vulnérabilités de séquence
     passed               : bool  = False
     metadata             : dict  = field(default_factory=dict)
 
@@ -103,6 +106,8 @@ class ValidationResult:
         max_hydrophobic_sasa_pct: float | None = 35.0,
         max_coil_pct: float | None = 45.0,
         max_ramachandran_outliers_pct: float | None = 2.0,
+        min_hbond_density: float | None = None,
+        max_liabilities: int | None = 0,
     ) -> bool:
         """Applique les critères de succès et met à jour ``passed``."""
         r_thresh = rmsd_threshold if rmsd_threshold is not None else rmsd_thresh
@@ -113,6 +118,8 @@ class ValidationResult:
         motif_ok = (self.motif_rmsd < m_thresh) if (m_thresh is not None and self.motif_rmsd != float("inf")) else True
         coil_ok  = (self.coil_pct <= max_coil_pct) if max_coil_pct is not None else True
         rama_ok  = (self.ramachandran_outliers_pct <= max_ramachandran_outliers_pct) if max_ramachandran_outliers_pct is not None else True
+        hb_ok    = (self.hbond_density >= min_hbond_density) if (min_hbond_density is not None and self.delta_sasa > 0) else True
+        liab_ok  = (self.n_liabilities <= max_liabilities) if max_liabilities is not None else True
         self.passed = (
             self.rmsd             < r_thresh   and
             self.plddt_mean       > p_thresh   and
@@ -120,7 +127,9 @@ class ValidationResult:
             cys_ok                             and
             hydro_ok                           and
             coil_ok                            and
-            rama_ok
+            rama_ok                            and
+            hb_ok                              and
+            liab_ok
         )
         return self.passed
 

@@ -76,3 +76,5 @@ validation:
   max_hydrophobic_sasa_pct: 35.0   # % max de surface hydrophobe (V,L,I,F,W,M <= 35% de la surface)
   max_coil_pct            : 45.0   # % max de boucles/régions non structurées (anti-molten globule)
   max_ramachandran_outliers_pct: 2.0 # % max de résidus hors zones autorisées du diagramme de Ramachandran
+  min_hbond_density       : 0.15   # Densité minimale de liaisons H (H-bonds / 100 Å² de surface enfouie ΔSASA)
+  max_liabilities         : 0      # Tolérance pièges chimiques de séquence (0 = aucun motif NG, DG, DP)

@@ -34,6 +34,7 @@ from optobind_ai.modules.biophysics import (
     analyze_cysteines,
     analyze_interface_interactions,
     analyze_secondary_structure_and_ramachandran,
+    analyze_sequence_liabilities,
 )
 from optobind_ai.utils.io_helpers import DesignedSequence, ValidationResult
 
@@ -140,8 +141,8 @@ def run_alphafold(
             seq_iter.set_postfix_str(f"{seq.name.split('_')[-2]}_{seq.name.split('_')[-1]} {status} (pLDDT={res.plddt_mean:.1f})")
         m_rmsd_str = f"mRMSD={res.motif_rmsd:.2f} Å" if res.motif_rmsd != float("inf") else "mRMSD=-"
         logger.info(
-            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  hydro=%.1f%%  hbonds=%d  SS(H/E/C)=%.0f/%.0f/%.0f%%  rama=%.1f%%  RMSD=%.2f Å (%s)  clashes=%d  cys_free=%d",
-            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.hydrophobic_sasa_pct, res.n_interface_hbonds, res.helix_pct, res.beta_pct, res.coil_pct, res.ramachandran_outliers_pct, res.rmsd, m_rmsd_str, res.n_clashes, res.n_unpaired_cys,
+            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  hydro=%.1f%%  hbonds=%d (%.2f/100Å²)  liab=%d  SS(H/E/C)=%.0f/%.0f/%.0f%%  rama=%.1f%%  RMSD=%.2f Å (%s)  clashes=%d  cys_free=%d",
+            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.hydrophobic_sasa_pct, res.n_interface_hbonds, res.hbond_density, res.n_liabilities, res.helix_pct, res.beta_pct, res.coil_pct, res.ramachandran_outliers_pct, res.rmsd, m_rmsd_str, res.n_clashes, res.n_unpaired_cys,
         )
 
     return results
@@ -209,6 +210,8 @@ def _predict_and_validate(
     max_hydro    = DEFAULT_CONFIG["validation"].get("max_hydrophobic_sasa_pct", 35.0)
     max_coil     = DEFAULT_CONFIG["validation"].get("max_coil_pct", 45.0)
     max_rama     = DEFAULT_CONFIG["validation"].get("max_ramachandran_outliers_pct", 2.0)
+    min_hbd      = DEFAULT_CONFIG["validation"].get("min_hbond_density", 0.15)
+    max_liab     = DEFAULT_CONFIG["validation"].get("max_liabilities", 0)
 
     from optobind_ai.modules.sequencing import motif_positions_from_contigs
     contigs = DEFAULT_CONFIG["rfdiffusion"].get("contigs", "")
@@ -229,6 +232,8 @@ def _predict_and_validate(
     cys_info = analyze_cysteines(predicted_pdb, logger=logger)
     inter_info = analyze_interface_interactions(predicted_pdb, logger=logger)
     ss_info = analyze_secondary_structure_and_ramachandran(predicted_pdb, logger=logger)
+    liab_info = analyze_sequence_liabilities(seq.sequence)
+    hbond_density = round(100.0 * inter_info["n_hbonds"] / delta_sasa, 2) if delta_sasa > 0 else 0.0
 
     result = ValidationResult(
         sequence                  = seq,
@@ -247,6 +252,7 @@ def _predict_and_validate(
         hydrophobic_sasa_pct      = hydro_pct,
         n_interface_hbonds        = inter_info["n_hbonds"],
         n_interface_salt_bridges  = inter_info["n_salt_bridges"],
+        hbond_density             = hbond_density,
         n_unpaired_cys            = cys_info["n_unpaired"],
         unpaired_details          = cys_info["details"],
         helix_pct                 = ss_info["helix_pct"],
@@ -255,6 +261,8 @@ def _predict_and_validate(
         ramachandran_outliers_pct = ss_info["ramachandran_outliers_pct"],
         n_ramachandran_outliers   = ss_info["n_ramachandran_outliers"],
         ramachandran_details      = ss_info["ramachandran_details"],
+        n_liabilities             = liab_info["n_liabilities"],
+        liabilities_details       = liab_info["details"],
     )
     result.validate(
         rmsd_thresh,
@@ -264,6 +272,8 @@ def _predict_and_validate(
         max_hydrophobic_sasa_pct=max_hydro,
         max_coil_pct=max_coil,
         max_ramachandran_outliers_pct=max_rama,
+        min_hbond_density=min_hbd,
+        max_liabilities=max_liab,
     )
     return result
 
@@ -315,6 +325,8 @@ def _evaluate_single_prediction(
     max_hydro    = cfg.get("max_hydrophobic_sasa_pct", DEFAULT_CONFIG["validation"].get("max_hydrophobic_sasa_pct", 35.0))
     max_coil     = cfg.get("max_coil_pct", DEFAULT_CONFIG["validation"].get("max_coil_pct", 45.0))
     max_rama     = cfg.get("max_ramachandran_outliers_pct", DEFAULT_CONFIG["validation"].get("max_ramachandran_outliers_pct", 2.0))
+    min_hbd      = cfg.get("min_hbond_density", DEFAULT_CONFIG["validation"].get("min_hbond_density", 0.15))
+    max_liab     = cfg.get("max_liabilities", DEFAULT_CONFIG["validation"].get("max_liabilities", 0))
 
     from optobind_ai.modules.sequencing import motif_positions_from_contigs
     contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
@@ -335,6 +347,8 @@ def _evaluate_single_prediction(
     cys_info = analyze_cysteines(pred_pdb, logger=logger)
     inter_info = analyze_interface_interactions(pred_pdb, logger=logger)
     ss_info = analyze_secondary_structure_and_ramachandran(pred_pdb, logger=logger)
+    liab_info = analyze_sequence_liabilities(seq.sequence)
+    hbond_density = round(100.0 * inter_info["n_hbonds"] / delta_sasa, 2) if delta_sasa > 0 else 0.0
 
     res = ValidationResult(
         sequence                  = seq,
@@ -353,6 +367,7 @@ def _evaluate_single_prediction(
         hydrophobic_sasa_pct      = hydro_pct,
         n_interface_hbonds        = inter_info["n_hbonds"],
         n_interface_salt_bridges  = inter_info["n_salt_bridges"],
+        hbond_density             = hbond_density,
         n_unpaired_cys            = cys_info["n_unpaired"],
         unpaired_details          = cys_info["details"],
         helix_pct                 = ss_info["helix_pct"],
@@ -361,6 +376,8 @@ def _evaluate_single_prediction(
         ramachandran_outliers_pct = ss_info["ramachandran_outliers_pct"],
         n_ramachandran_outliers   = ss_info["n_ramachandran_outliers"],
         ramachandran_details      = ss_info["ramachandran_details"],
+        n_liabilities             = liab_info["n_liabilities"],
+        liabilities_details       = liab_info["details"],
     )
     res.validate(
         rmsd_thresh,
@@ -370,6 +387,8 @@ def _evaluate_single_prediction(
         max_hydrophobic_sasa_pct=max_hydro,
         max_coil_pct=max_coil,
         max_ramachandran_outliers_pct=max_rama,
+        min_hbond_density=min_hbd,
+        max_liabilities=max_liab,
     )
     return res
 
@@ -1307,6 +1326,9 @@ def _dry_run_validation(
     coil_pct     = round(100.0 - helix_pct - beta_pct, 1)
     rama_out     = round(random.uniform(0.0, 1.2), 1)
 
+    n_hb = random.randint(1, 4)
+    hb_dens = round(100.0 * n_hb / delta_sasa, 2) if delta_sasa > 0 else 0.0
+
     result = ValidationResult(
         sequence                  = seq,
         pdb_path                  = None,
@@ -1322,8 +1344,9 @@ def _dry_run_validation(
         sasa                      = sasa,
         delta_sasa                = delta_sasa,
         hydrophobic_sasa_pct      = hydro_pct,
-        n_interface_hbonds        = random.randint(1, 4),
+        n_interface_hbonds        = n_hb,
         n_interface_salt_bridges  = random.randint(0, 1),
+        hbond_density             = hb_dens,
         n_unpaired_cys            = 0,
         unpaired_details          = "-",
         helix_pct                 = helix_pct,
@@ -1332,6 +1355,8 @@ def _dry_run_validation(
         ramachandran_outliers_pct = rama_out,
         n_ramachandran_outliers   = 1 if rama_out > 0 else 0,
         ramachandran_details      = "-" if rama_out == 0 else "GLY28",
+        n_liabilities             = 0,
+        liabilities_details       = "-",
         metadata                  = {"dry_run": True},
     )
     result.validate(
@@ -1342,5 +1367,7 @@ def _dry_run_validation(
         max_hydrophobic_sasa_pct=35.0,
         max_coil_pct=45.0,
         max_ramachandran_outliers_pct=2.0,
+        min_hbond_density=0.15,
+        max_liabilities=0,
     )
     return result

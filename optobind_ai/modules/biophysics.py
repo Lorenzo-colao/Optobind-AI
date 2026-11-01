@@ -71,6 +71,59 @@ def compute_physicochemical_properties(sequence: str) -> dict[str, float]:
         }
 
 
+def analyze_sequence_liabilities(sequence: str) -> dict[str, Any]:
+    """
+    Analyse les motifs de vulnérabilité chimique et d'instabilité de séquence (Sequence Liabilities) :
+      - Déamidation spontanée : 'NG', 'NS'
+      - Isomérisation de l'aspartate : 'DG', 'DS'
+      - Clivage acide spontané : 'DP'
+      - Motifs de N-glycosylation non désirés : 'N[^P][ST]'
+      - Répétitions de faible complexité : >= 4 résidus identiques consécutifs
+
+    Returns
+    -------
+    dict avec 'n_liabilities', 'liabilities', 'details'.
+    """
+    clean_seq = "".join(aa for aa in sequence.upper() if aa in _STANDARD_AAS)
+    liabilities: list[str] = []
+
+    # 1. Déamidation spontanée
+    for match in re.finditer(r"N[GS]", clean_seq):
+        pos = match.start() + 1
+        motif = match.group()
+        liabilities.append(f"{motif}(pos:{pos}:deamidation)")
+
+    # 2. Isomérisation
+    for match in re.finditer(r"D[GS]", clean_seq):
+        pos = match.start() + 1
+        motif = match.group()
+        liabilities.append(f"{motif}(pos:{pos}:isomerization)")
+
+    # 3. Clivage acide
+    for match in re.finditer(r"DP", clean_seq):
+        pos = match.start() + 1
+        liabilities.append(f"DP(pos:{pos}:acid_cleavage)")
+
+    # 4. N-glycosylation consensus N-X-S/T (où X != P)
+    for match in re.finditer(r"N[^P][ST]", clean_seq):
+        pos = match.start() + 1
+        motif = match.group()
+        liabilities.append(f"{motif}(pos:{pos}:n_glyco)")
+
+    # 5. Homopolymères consécutifs (>= 4 du même acide aminé)
+    for match in re.finditer(r"([A-Z])\1{3,}", clean_seq):
+        pos = match.start() + 1
+        motif = match.group()
+        liabilities.append(f"{motif}(pos:{pos}:poly_{motif[0]})")
+
+    details = ", ".join(liabilities) if liabilities else "-"
+    return {
+        "n_liabilities": len(liabilities),
+        "liabilities": liabilities,
+        "details": details,
+    }
+
+
 def query_protein_sol(
     sequence: str,
     timeout: float = 8.0,
