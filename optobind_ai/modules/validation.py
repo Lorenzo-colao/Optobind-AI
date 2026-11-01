@@ -134,9 +134,10 @@ def run_alphafold(
         status = "✓ PASS" if res.passed else "✗ FAIL"
         if hasattr(seq_iter, "set_postfix_str"):
             seq_iter.set_postfix_str(f"{seq.name.split('_')[-2]}_{seq.name.split('_')[-1]} {status} (pLDDT={res.plddt_mean:.1f})")
+        m_rmsd_str = f"mRMSD={res.motif_rmsd:.2f} Å" if res.motif_rmsd != float("inf") else "mRMSD=-"
         logger.info(
-            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  hydro=%.1f%%  hbonds=%d  RMSD=%.2f Å  clashes=%d  cys_free=%d",
-            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.hydrophobic_sasa_pct, res.n_interface_hbonds, res.rmsd, res.n_clashes, res.n_unpaired_cys,
+            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  hydro=%.1f%%  hbonds=%d  RMSD=%.2f Å (%s)  clashes=%d  cys_free=%d",
+            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.hydrophobic_sasa_pct, res.n_interface_hbonds, res.rmsd, m_rmsd_str, res.n_clashes, res.n_unpaired_cys,
         )
 
     return results
@@ -198,9 +199,23 @@ def _predict_and_validate(
 
     from optobind_ai.utils.config import DEFAULT_CONFIG
     rmsd_thresh  = DEFAULT_CONFIG["validation"]["rmsd_threshold"]
+    motif_thresh = DEFAULT_CONFIG["validation"].get("motif_rmsd_threshold", 1.5)
     plddt_thresh = DEFAULT_CONFIG["validation"]["plddt_threshold"]
     max_cys      = DEFAULT_CONFIG["validation"].get("max_unpaired_cys", 0)
     max_hydro    = DEFAULT_CONFIG["validation"].get("max_hydrophobic_sasa_pct", 35.0)
+
+    from optobind_ai.modules.sequencing import motif_positions_from_contigs
+    contigs = DEFAULT_CONFIG["rfdiffusion"].get("contigs", "")
+    motif_positions = motif_positions_from_contigs(contigs, seq.scaffold.n_residues, logger)
+    if predicted_pdb and motif_positions:
+        motif_rmsd = _compute_rmsd(
+            reference_pdb   = seq.scaffold.pdb_path,
+            predicted_pdb   = predicted_pdb,
+            logger          = logger,
+            residue_indices = motif_positions,
+        )
+    else:
+        motif_rmsd = rmsd
 
     ptm, iptm = _parse_chai_tm_scores(output_dir / seq.name, logger)
     pae_mean, pae_inter = _parse_chai_pae(output_dir / seq.name, len(seq.sequence), logger)
@@ -214,6 +229,7 @@ def _predict_and_validate(
         plddt_mean               = plddt_mean,
         plddt_pocket             = plddt_pocket,
         rmsd                     = rmsd,
+        motif_rmsd               = motif_rmsd,
         n_clashes                = n_clashes,
         ptm                      = ptm,
         iptm                     = iptm,
@@ -227,7 +243,7 @@ def _predict_and_validate(
         n_unpaired_cys           = cys_info["n_unpaired"],
         unpaired_details         = cys_info["details"],
     )
-    result.validate(rmsd_thresh, plddt_thresh, max_unpaired_cys=max_cys, max_hydrophobic_sasa_pct=max_hydro)
+    result.validate(rmsd_thresh, plddt_thresh, motif_rmsd_threshold=motif_thresh, max_unpaired_cys=max_cys, max_hydrophobic_sasa_pct=max_hydro)
     return result
 
 
@@ -272,9 +288,23 @@ def _evaluate_single_prediction(
 
     from optobind_ai.utils.config import DEFAULT_CONFIG
     rmsd_thresh  = cfg.get("rmsd_threshold", DEFAULT_CONFIG["validation"]["rmsd_threshold"])
+    motif_thresh = cfg.get("motif_rmsd_threshold", DEFAULT_CONFIG["validation"].get("motif_rmsd_threshold", 1.5))
     plddt_thresh = cfg.get("plddt_threshold", DEFAULT_CONFIG["validation"]["plddt_threshold"])
     max_cys      = cfg.get("max_unpaired_cys", DEFAULT_CONFIG["validation"].get("max_unpaired_cys", 0))
     max_hydro    = cfg.get("max_hydrophobic_sasa_pct", DEFAULT_CONFIG["validation"].get("max_hydrophobic_sasa_pct", 35.0))
+
+    from optobind_ai.modules.sequencing import motif_positions_from_contigs
+    contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
+    motif_positions = motif_positions_from_contigs(contigs, seq.scaffold.n_residues, logger)
+    if pred_pdb and motif_positions:
+        motif_rmsd = _compute_rmsd(
+            reference_pdb   = seq.scaffold.pdb_path,
+            predicted_pdb   = pred_pdb,
+            logger          = logger,
+            residue_indices = motif_positions,
+        )
+    else:
+        motif_rmsd = rmsd
 
     ptm, iptm = _parse_chai_tm_scores(out_dir, logger)
     pae_mean, pae_inter = _parse_chai_pae(out_dir, len(seq.sequence), logger)
@@ -288,6 +318,7 @@ def _evaluate_single_prediction(
         plddt_mean               = plddt_mean,
         plddt_pocket             = plddt_pocket,
         rmsd                     = rmsd,
+        motif_rmsd               = motif_rmsd,
         n_clashes                = n_clashes,
         ptm                      = ptm,
         iptm                     = iptm,
@@ -301,7 +332,7 @@ def _evaluate_single_prediction(
         n_unpaired_cys           = cys_info["n_unpaired"],
         unpaired_details         = cys_info["details"],
     )
-    res.validate(rmsd_thresh, plddt_thresh, max_unpaired_cys=max_cys, max_hydrophobic_sasa_pct=max_hydro)
+    res.validate(rmsd_thresh, plddt_thresh, motif_rmsd_threshold=motif_thresh, max_unpaired_cys=max_cys, max_hydrophobic_sasa_pct=max_hydro)
     return res
 
 
@@ -778,16 +809,17 @@ def _run_alphafold3(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _compute_rmsd(
-    reference_pdb : Path,
-    predicted_pdb : Path | None,
-    logger        : logging.Logger,
+    reference_pdb  : Path,
+    predicted_pdb  : Path | None,
+    logger         : logging.Logger,
+    residue_indices: list[int] | None = None,
 ) -> float:
     """
     Calcule le RMSD Cα entre le squelette de référence (RFdiffusion)
     et la structure prédite (AlphaFold / Chai-1).
 
-    Algorithme de Kabsch vectorisé direct, tolérant aux PDB/mmCIF non standards
-    (évite les plantages int('G2') du parser strict de Biopython).
+    Si ``residue_indices`` est spécifié, calcule le RMSD exclusivement sur
+    les résidus du motif fonctionnel (Motif RMSD).
     """
     if predicted_pdb is None or not predicted_pdb.exists():
         return float("inf")
@@ -810,12 +842,18 @@ def _compute_rmsd(
             else:
                 predicted_pdb = pdb_conv
 
+        target_res = set(residue_indices) if residue_indices else None
+
         def _get_ca(p: Path) -> np.ndarray:
             coords = []
             with p.open("r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     if line.startswith("ATOM") and line[12:16].strip() == "CA":
                         try:
+                            if target_res is not None:
+                                r_id = int(line[22:26].strip())
+                                if r_id not in target_res:
+                                    continue
                             coords.append([float(line[30:38]), float(line[38:46]), float(line[46:54])])
                         except (ValueError, IndexError):
                             pass
@@ -826,7 +864,7 @@ def _compute_rmsd(
 
         n = min(len(ref_coords), len(pred_coords))
         if n == 0:
-            return float("inf")
+            return 0.0 if target_res is not None else float("inf")
 
         P = ref_coords[:n]
         Q = pred_coords[:n]
@@ -1222,6 +1260,7 @@ def _dry_run_validation(
     sasa         = round(random.uniform(4500.0, 6500.0), 1)
     delta_sasa   = round(random.uniform(500.0, 950.0), 1)
     rmsd         = round(random.uniform(0.5, 3.5),   3)
+    motif_rmsd   = round(random.uniform(0.3, 1.8),   3)
     n_clashes    = random.randint(0, 3)
 
     hydro_pct    = round(random.uniform(5.0, 22.0), 1)
@@ -1232,6 +1271,7 @@ def _dry_run_validation(
         plddt_mean               = plddt_mean,
         plddt_pocket             = plddt_pocket,
         rmsd                     = rmsd,
+        motif_rmsd               = motif_rmsd,
         n_clashes                = n_clashes,
         ptm                      = ptm,
         iptm                     = iptm,
@@ -1246,5 +1286,5 @@ def _dry_run_validation(
         unpaired_details         = "-",
         metadata                 = {"dry_run": True},
     )
-    result.validate(rmsd_threshold=2.0, plddt_threshold=90.0, max_unpaired_cys=0, max_hydrophobic_sasa_pct=35.0)
+    result.validate(rmsd_threshold=2.0, plddt_threshold=90.0, motif_rmsd_threshold=1.5, max_unpaired_cys=0, max_hydrophobic_sasa_pct=35.0)
     return result

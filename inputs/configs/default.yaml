@@ -68,7 +68,8 @@ alphafold:
 # Critères de validation in silico
 # ─────────────────────────────────────────────────────────────────────────────
 validation:
-  rmsd_threshold          : 2.0    # Seuil RMSD Cα (Å) — doit être < ce seuil
+  rmsd_threshold          : 2.0    # Seuil RMSD Cα global (Å) — doit être < ce seuil
+  motif_rmsd_threshold    : 1.5    # Seuil RMSD Cα motif fonctionnel (Å) — intégrité du site de liaison
   plddt_threshold         : 90.0   # pLDDT moyen requis (sur 100)
   clash_vdw_cutoff        : 0.6    # Fraction du rayon VdW pour détecter un clash
   max_unpaired_cys        : 0      # Tolérance cystéines orphelines (0 = aucune tolérée pour éviter agrégation)

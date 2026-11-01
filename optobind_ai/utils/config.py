@@ -55,7 +55,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "use_cuda"            : True,
     },
     "validation": {
-        "rmsd_threshold"            : 2.0,   # Å
+        "rmsd_threshold"            : 2.0,   # Å (RMSD Cα global)
+        "motif_rmsd_threshold"      : 1.5,   # Å (RMSD Cα sur les résidus du motif fonctionnel)
         "plddt_threshold"           : 90.0,  # score AlphaFold
         "clash_vdw_cutoff"          : 0.6,   # fraction de rayon de Van der Waals
         "max_unpaired_cys"          : 0,     # Nombre maximal de cystéines orphelines (0 = tolérance zéro)

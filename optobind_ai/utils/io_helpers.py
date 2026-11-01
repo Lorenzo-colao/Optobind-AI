@@ -67,6 +67,7 @@ class ValidationResult:
     plddt_mean         : float = 0.0
     plddt_pocket       : float = 0.0     # pLDDT moyen sur la poche de liaison
     rmsd               : float = float("inf")
+    motif_rmsd         : float = float("inf") # RMSD Cα sur les résidus du motif fonctionnel (Å)
     n_clashes          : int   = 0
     ptm                : float = 0.0     # predicted TM-score (qualité du repliement global)
     iptm               : float = 0.0     # interface predicted TM-score (complexe / ligand)
@@ -90,18 +91,22 @@ class ValidationResult:
         plddt_thresh: float = 90.0,
         *,
         rmsd_threshold: float | None = None,
+        motif_rmsd_threshold: float | None = 1.5,
         plddt_threshold: float | None = None,
         max_unpaired_cys: int | None = 0,
         max_hydrophobic_sasa_pct: float | None = 35.0,
     ) -> bool:
         """Applique les critères de succès et met à jour ``passed``."""
         r_thresh = rmsd_threshold if rmsd_threshold is not None else rmsd_thresh
+        m_thresh = motif_rmsd_threshold
         p_thresh = plddt_threshold if plddt_threshold is not None else plddt_thresh
         cys_ok   = (self.n_unpaired_cys <= max_unpaired_cys) if max_unpaired_cys is not None else True
         hydro_ok = (self.hydrophobic_sasa_pct <= max_hydrophobic_sasa_pct) if max_hydrophobic_sasa_pct is not None else True
+        motif_ok = (self.motif_rmsd < m_thresh) if (m_thresh is not None and self.motif_rmsd != float("inf")) else True
         self.passed = (
             self.rmsd             < r_thresh   and
             self.plddt_mean       > p_thresh   and
+            motif_ok                           and
             cys_ok                             and
             hydro_ok
         )

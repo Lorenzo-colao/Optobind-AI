@@ -53,6 +53,7 @@ _CSV_HEADERS = [
     "n_unpaired_cys",
     "unpaired_cys_details",
     "rmsd_angstrom",
+    "motif_rmsd_angstrom",
     "n_steric_clashes",
     "passed",
     "scaffold_pdb",
@@ -122,8 +123,9 @@ def build_report(
             "n_interface_salt_bridges": str(val.n_interface_salt_bridges)  if val else "N/A",
             "n_unpaired_cys"          : str(val.n_unpaired_cys)            if val else "N/A",
             "unpaired_cys_details"    : val.unpaired_details               if val else "N/A",
-            "rmsd_angstrom"       : f"{val.rmsd:.4f}"                  if val else "N/A",
-            "n_steric_clashes"  : str(val.n_clashes)         if val else "N/A",
+            "rmsd_angstrom"           : f"{val.rmsd:.4f}"                  if val else "N/A",
+            "motif_rmsd_angstrom"     : f"{val.motif_rmsd:.4f}"            if val else "N/A",
+            "n_steric_clashes"        : str(val.n_clashes)                 if val else "N/A",
             "passed"            : str(val.passed)            if val else "N/A",
             "scaffold_pdb"      : str(seq.scaffold.pdb_path),
             "predicted_pdb"     : str(val.pdb_path or "N/A") if val else "N/A",
@@ -192,22 +194,22 @@ def print_summary(
     n_fail = len(validation_results) - n_pass
     n_no_val = len(sequences) - len(validation_results)
 
-    sep = "-" * 128
+    sep = "-" * 136
 
-    _print(f"\n{BOLD}{'=' * 128}{RESET}")
+    _print(f"\n{BOLD}{'=' * 136}{RESET}")
     _print(f"{BOLD}  RESUME OptoBind-AI{RESET}")
     _print(f"{sep}")
     _print(f"  Squelettes generes  : {len(scaffolds)}")
     _print(f"  Sequences optimisees: {len(sequences)}")
     _print(f"  Variants valides    : {GREEN}{n_pass} PASS{RESET}  /  {RED}{n_fail} FAIL{RESET}"
            + (f"  /  {YELLOW}{n_no_val} non valides{RESET}" if n_no_val else ""))
-    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A  |  Cys orphelines = 0  |  %Hydro <= 35%")
+    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A  |  mRMSD <= 1.5 A  |  Cys orphelines = 0  |  %Hydro <= 35%")
     _print(f"{sep}")
 
     if validation_results:
         header = (
-            f"  {'Variant':<33} {'pLDDT':>6} {'pTM':>5} {'ipTM':>5} {'PAE':>5} {'dSASA':>6} "
-            f"{'%Hyd':>5} {'HB':>3} {'SB':>3} {'pI':>5} {'GRAVY':>6} {'Solub':>6} {'Cys':>5} {'RMSD':>6} {'Clash':>5} {'Status':>7}"
+            f"  {'Variant':<31} {'pLDDT':>5} {'pTM':>5} {'ipTM':>5} {'PAE':>4} {'dSASA':>5} "
+            f"{'%Hyd':>5} {'HB':>2} {'SB':>2} {'pI':>5} {'GRAVY':>5} {'Solub':>5} {'Cys':>4} {'RMSD':>5} {'mRMSD':>5} {'Clash':>5} {'Status':>7}"
         )
         _print(header)
         _print(f"  {sep[2:]}")
@@ -215,13 +217,14 @@ def print_summary(
             color  = GREEN if v.passed else RED
             status = "PASS OK" if v.passed else "FAIL  X"
             sol_str = f"{v.solubility_score:.2f}" if v.solubility_score is not None else "-"
-            cys_str = "0" if v.n_unpaired_cys == 0 else f"{v.n_unpaired_cys}(C{v.unpaired_details.split('(')[0][1:]})"[:5]
+            cys_str = "0" if v.n_unpaired_cys == 0 else f"{v.n_unpaired_cys}(C{v.unpaired_details.split('(')[0][1:]})"[:4]
+            m_rmsd_str = f"{v.motif_rmsd:.2f}" if v.motif_rmsd != float("inf") else "inf"
             _print(
-                f"  {v.sequence.name:<33} {v.plddt_mean:>6.1f} "
-                f"{v.ptm:>5.2f} {v.iptm:>5.2f} {v.pae_inter:>5.1f} {v.delta_sasa:>6.0f} "
-                f"{v.hydrophobic_sasa_pct:>4.1f}% {v.n_interface_hbonds:>3d} {v.n_interface_salt_bridges:>3d} "
-                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>6.2f} {sol_str:>6} {cys_str:>5} "
-                f"{v.rmsd:>6.2f} {v.n_clashes:>5d} "
+                f"  {v.sequence.name:<31} {v.plddt_mean:>5.1f} "
+                f"{v.ptm:>5.2f} {v.iptm:>5.2f} {v.pae_inter:>4.1f} {v.delta_sasa:>5.0f} "
+                f"{v.hydrophobic_sasa_pct:>4.1f}% {v.n_interface_hbonds:>2d} {v.n_interface_salt_bridges:>2d} "
+                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>5.2f} {sol_str:>5} {cys_str:>4} "
+                f"{v.rmsd:>5.2f} {m_rmsd_str:>5} {v.n_clashes:>5d} "
                 f"{color}{status:>7}{RESET}"
             )
     else:
@@ -230,4 +233,4 @@ def print_summary(
     _print(f"{sep}")
     _print(f"  Rapport CSV   : {report_path}")
     _print(f"  Rapport Excel : {report_path.with_suffix('.xlsx')}")
-    _print(f"{'=' * 128}{RESET}\n")
+    _print(f"{'=' * 136}{RESET}\n")
