@@ -814,3 +814,198 @@ def analyze_secondary_structure_and_ramachandran(
     except Exception as exc:
         _log.debug("[BIOPHYSICS] Erreur analyse structures secondaires / Ramachandran : %s", exc)
         return default_result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Analyse et Préservation de la Coordination Métallique (Zn2+, etc.)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def ensure_metal_coordination_conect(
+    pdb_path: Path | str,
+    cutoff: float = 2.8,
+) -> dict[str, Any]:
+    """
+    Détecte les ions métalliques et les atomes coordinateurs (Cys SG, His NE2/ND1,
+    Asp OD, Glu OE) dans un PDB et y injecte explicitement les enregistrements LINK
+    et CONECT pour garantir le maintien visuel et structural des liaisons de coordination.
+    """
+    path = Path(pdb_path)
+    if not path.is_file():
+        return {"metals": 0, "bonds": 0}
+
+    import numpy as _np
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    metal_elements = {"ZN", "FE", "CU", "MG", "MN", "NI", "CO", "CD", "CA"}
+
+    metals = []
+    coord_candidates = []
+    existing_conect = set()
+    existing_links = []
+
+    for line in lines:
+        if line.startswith("LINK"):
+            existing_links.append(line)
+        elif line.startswith("CONECT"):
+            existing_conect.add(line)
+        elif line.startswith(("ATOM", "HETATM")):
+            try:
+                serial = int(line[6:11].strip())
+                name = line[12:16].strip().upper()
+                res_name = line[17:20].strip().upper()
+                chain = line[21]
+                res_seq = int(line[22:26].strip())
+                x = float(line[30:38].strip())
+                y = float(line[38:46].strip())
+                z = float(line[46:54].strip())
+                pos = _np.array([x, y, z])
+            except Exception:
+                continue
+
+            if line.startswith("HETATM") and (res_name in metal_elements or name in metal_elements):
+                metals.append({
+                    "serial": serial, "name": name, "res_name": res_name,
+                    "chain": chain, "res_seq": res_seq, "pos": pos,
+                })
+            elif (res_name == "CYS" and name == "SG") or \
+                 (res_name == "HIS" and name in ["NE2", "ND1"]) or \
+                 (res_name == "ASP" and name in ["OD1", "OD2"]) or \
+                 (res_name == "GLU" and name in ["OE1", "OE2"]):
+                coord_candidates.append({
+                    "serial": serial, "name": name, "res_name": res_name,
+                    "chain": chain, "res_seq": res_seq, "pos": pos,
+                })
+
+    if not metals or not coord_candidates:
+        return {"metals": len(metals), "bonds": 0}
+
+    new_links = []
+    new_conects = []
+    bonds_count = 0
+
+    for m in metals:
+        bonded_serials = []
+        for c in coord_candidates:
+            d = _np.linalg.norm(m["pos"] - c["pos"])
+            if d <= cutoff:
+                bonded_serials.append(c["serial"])
+                bonds_count += 1
+                link_str = (
+                    f"LINK         {c['name']:<4s}{c['res_name']:>3s} {c['chain']}{c['res_seq']:4d}                 "
+                    f"{m['name']:<4s}{m['res_name']:>3s} {m['chain']}{m['res_seq']:4d}     1555   1555  {d:4.2f}"
+                )
+                new_links.append(link_str)
+                new_conects.append(f"CONECT{c['serial']:5d}{m['serial']:5d}")
+
+        if bonded_serials:
+            for chunk_start in range(0, len(bonded_serials), 4):
+                chunk = bonded_serials[chunk_start:chunk_start + 4]
+                s_str = "".join(f"{s:5d}" for s in chunk)
+                new_conects.append(f"CONECT{m['serial']:5d}{s_str}")
+
+    header = []
+    body = []
+    conects = []
+
+    for line in lines:
+        if line.startswith("LINK"):
+            continue
+        elif line.startswith("CONECT"):
+            conects.append(line)
+        elif line.startswith("END"):
+            continue
+        elif line.startswith(("REMARK", "HEADER", "TITLE")):
+            header.append(line)
+        else:
+            body.append(line)
+
+    all_links = list(dict.fromkeys(new_links + existing_links))
+    all_conects = list(dict.fromkeys(conects + new_conects))
+
+    final_lines = header + all_links + body + all_conects + ["END"]
+    path.write_text("\n".join(final_lines) + "\n", encoding="utf-8")
+
+    return {"metals": len(metals), "bonds": bonds_count}
+
+
+def analyze_metal_coordination(
+    pdb_path: Path | str | None,
+    cutoff: float = 2.8,
+    logger: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """
+    Analyse quantitative de la sphère de coordination métallique (Zn2+, etc.).
+    Retourne le nombre de ligands coordinateurs, les distances et la géométrie.
+    """
+    _log = logger or log
+    default_res: dict[str, Any] = {
+        "metals_count": 0,
+        "coordination_number": 0,
+        "is_tetrahedral": False,
+        "coordination_residues": [],
+        "coordination_details": "-",
+    }
+    if not pdb_path:
+        return default_res
+
+    path = Path(pdb_path)
+    if not path.is_file():
+        return default_res
+
+    try:
+        import numpy as _np
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        metal_elements = {"ZN", "FE", "CU", "MG", "MN", "NI", "CO", "CD", "CA"}
+
+        metals = []
+        candidates = []
+
+        for line in lines:
+            if not line.startswith(("ATOM", "HETATM")):
+                continue
+            try:
+                name = line[12:16].strip().upper()
+                res_name = line[17:20].strip().upper()
+                chain = line[21]
+                res_seq = int(line[22:26].strip())
+                x = float(line[30:38].strip())
+                y = float(line[38:46].strip())
+                z = float(line[46:54].strip())
+                pos = _np.array([x, y, z])
+            except Exception:
+                continue
+
+            if line.startswith("HETATM") and (res_name in metal_elements or name in metal_elements):
+                metals.append({"name": name, "res": res_name, "chain": chain, "seq": res_seq, "pos": pos})
+            elif (res_name == "CYS" and name == "SG") or \
+                 (res_name == "HIS" and name in ["NE2", "ND1"]) or \
+                 (res_name == "ASP" and name in ["OD1", "OD2"]) or \
+                 (res_name == "GLU" and name in ["OE1", "OE2"]):
+                candidates.append({"name": name, "res": res_name, "chain": chain, "seq": res_seq, "pos": pos})
+
+        if not metals:
+            return default_res
+
+        # On évalue le premier métal principal (ex: Zn)
+        m = metals[0]
+        coord_bonds = []
+        for c in candidates:
+            d = _np.linalg.norm(m["pos"] - c["pos"])
+            if d <= cutoff:
+                coord_bonds.append((f"{c['res']}{c['seq']}({c['name']})", round(float(d), 2)))
+
+        cn = len(coord_bonds)
+        details = ", ".join(f"{res}:{d}Å" for res, d in coord_bonds) if coord_bonds else "-"
+
+        return {
+            "metals_count": len(metals),
+            "coordination_number": cn,
+            "is_tetrahedral": cn == 4,
+            "coordination_residues": [r for r, _ in coord_bonds],
+            "coordination_details": details,
+        }
+
+    except Exception as exc:
+        _log.debug("[BIOPHYSICS] Erreur analyse coordination métallique : %s", exc)
+        return default_res
+

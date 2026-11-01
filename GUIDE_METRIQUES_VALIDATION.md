@@ -282,3 +282,28 @@ HCHCDKEKLEKVKKKHAELVKRLAEEVGDKTGYRVACVILEAEKGKTPEGREILRLMTENPEEAVPEIAKRIKKIFAK
    - **Liabilities :** **$0$ motif indésirable** (aucun `NG`, `DG`, `DP`, ni poly-patch).
 
 ### Statut Final : **`PASS OK` (Prêt pour la commande d'ADN et le test in vitro)**.
+
+---
+
+## 9. Verrouillage et Préservation Stricte des 4 Liaisons du Zinc ($\text{Zn}^{2+}$)
+
+Dans le PDB cible d'entrée ([`inputs/targets/zn2+_site.pdb`](file:///c:/Users/colao/Desktop/Projet%20protéine/inputs/targets/zn2+_site.pdb)), la coordination du zinc est désormais fixée selon une **géométrie tétraédrique cristallographique $C_2H_2$** à haute résolution (issue de la structure PDB `1A1L`) :
+
+### 1. Définition des 4 Liaisons Coordonnées
+- **$\text{CYS 1 (SG)} \leftrightarrow \text{ZN}$** : Distance $= 2.25\text{ \AA}$
+- **$\text{CYS 2 (SG)} \leftrightarrow \text{ZN}$** : Distance $= 2.17\text{ \AA}$
+- **$\text{HIS 3 (NE2)} \leftrightarrow \text{ZN}$** : Distance $= 2.20\text{ \AA}$
+- **$\text{HIS 4 (NE2)} \leftrightarrow \text{ZN}$** : Distance $= 1.92\text{ \AA}$
+- **Angles dièdres $\text{L}_i-\text{Zn}-\text{L}_j$ :** Tous compris entre $103.9^\circ$ et $114.6^\circ$ (moyenne $109.5^\circ$, tétraèdre parfait).
+
+### 2. Enregistrements PDB Officiels
+Le fichier PDB d'entrée comporte les fiches officielles :
+- Fiches `LINK` en tête de fichier spécifiant chaque liaison donneur-accepteur de coordination.
+- Fiches `CONECT` bidirectionnelles (`CONECT 34 6 12 22 32` et réciproques) reliant l'ion $\text{Zn}$ aux atomes `SG` et `NE2`.
+
+### 3. Conservation Intégrale dans le Pipeline
+- **RFdiffusion All-Atom** : Le motif $\text{A1-4}$ est gelé dans l'espace (`contigs: A1-4,70-100`).
+- **ProteinMPNN** : Les positions $1, 2, 3, 4$ sont verrouillées (`fix_motif: true`) $\to$ aucune mutation autorisée, la séquence garde strictement `CYS-CYS-HIS-HIS`.
+- **Chai-1 Restraints** : Le pipeline génère automatiquement un fichier `restraints_metal.csv` imposant à Chai-1 de replier l'ion $\text{Zn}^{2+}$ au sein de la sphère de coordination des résidus du motif ($d \le 2.6\text{ \AA}$).
+- **Post-traitement 3D** : Tout PDB produit par Chai-1 est automatiquement inspecté par `ensure_metal_coordination_conect` pour y réinjecter les fiches `LINK` et `CONECT`, garantissant un affichage instantané des 4 liaisons sous Mol* / PyMOL.
+

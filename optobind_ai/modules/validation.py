@@ -33,8 +33,10 @@ from typing import Any
 from optobind_ai.modules.biophysics import (
     analyze_cysteines,
     analyze_interface_interactions,
+    analyze_metal_coordination,
     analyze_secondary_structure_and_ramachandran,
     analyze_sequence_liabilities,
+    ensure_metal_coordination_conect,
 )
 from optobind_ai.utils.io_helpers import DesignedSequence, ValidationResult
 
@@ -295,10 +297,13 @@ def _evaluate_single_prediction(
             st = gemmi.make_structure_from_block(doc.sole_block())
             pdb_out = out_dir / "pred.pdb"
             st.write_minimal_pdb(str(pdb_out))
+            ensure_metal_coordination_conect(pdb_out)
         except Exception as exc:
             logger.debug("[GEMMI] Conversion CIF vers PDB : %s", exc)
 
     pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
+    if pred_pdb and pred_pdb.suffix.lower() == ".pdb":
+        ensure_metal_coordination_conect(pred_pdb)
     plddt_scores = _parse_chai_plddt(out_dir, logger)
     plddt_mean = sum(plddt_scores) / len(plddt_scores) if plddt_scores else 0.0
 
@@ -416,12 +421,22 @@ def _run_chai1_batch(
     fasta_dir.mkdir(parents=True, exist_ok=True)
     ligand_smiles = _sdf_to_smiles(ligand_file, logger)
 
+    restraints_path = fasta_dir / "restraints_metal.csv"
+    has_restraints = _write_chai_restraints(restraints_path, target_pdb)
+    if has_restraints:
+        logger.info("  🔒 Contraintes de coordination métallique Chai-1 activées (restraints_metal.csv)")
+
     tasks = []
     for seq in sequences:
         fpath = fasta_dir / f"{seq.name}.fasta"
         _write_chai_fasta(fpath, seq.sequence, ligand_smiles)
         out_p = output_dir / seq.name
-        tasks.append({"name": seq.name, "fasta": str(fpath.resolve()), "out": str(out_p.resolve())})
+        tasks.append({
+            "name": seq.name,
+            "fasta": str(fpath.resolve()),
+            "out": str(out_p.resolve()),
+            "constraint": str(restraints_path.resolve()) if has_restraints else None,
+        })
 
     import json as _json
     tasks_file = fasta_dir / "batch_tasks.json"
@@ -491,10 +506,12 @@ for i, t in enumerate(task_list, 1):
         try:
             t0 = time.time()
             print(f"CHAI1_ITEM_START: {{i}}/{{len(task_list)}}:{{name}}", flush=True)
+            constraint_p = pathlib.Path(t['constraint']) if t.get('constraint') else None
             cands = run_inference(
                 fasta_file=fasta_p,
                 output_dir=out_p,
                 device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
+                constraint_path=constraint_p if (constraint_p and constraint_p.exists()) else None,
                 num_trunk_recycles={recycles},
                 num_diffn_samples={samples},
                 use_esm_embeddings={use_esm},
@@ -636,6 +653,10 @@ def _run_chai1(
     ligand_smiles = _sdf_to_smiles(ligand_file, logger)
     _write_chai_fasta(fasta_path, seq.sequence, ligand_smiles)
 
+    restraints_path = fasta_dir / "restraints_metal.csv"
+    has_restraints = _write_chai_restraints(restraints_path, target_pdb)
+    constraint_path_str = restraints_path.as_posix() if has_restraints else ""
+
     # Répertoire de sortie dédié et garanti vide pour Chai-1
     out_dir = output_dir / seq.name
     if out_dir.exists():
@@ -677,6 +698,7 @@ except Exception as exc:
 
 out_p = pathlib.Path('{out_dir.as_posix()}')
 fasta_p = pathlib.Path('{fasta_path.as_posix()}')
+constraint_p = pathlib.Path('{constraint_path_str}') if '{constraint_path_str}' else None
 
 max_retries = 3
 for attempt in range(1, max_retries + 1):
@@ -693,6 +715,7 @@ for attempt in range(1, max_retries + 1):
             fasta_file=fasta_p,
             output_dir=out_p,
             device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
+            constraint_path=constraint_p if (constraint_p and constraint_p.exists()) else None,
             num_trunk_recycles={recycles},
             num_diffn_samples={samples},
             use_esm_embeddings={use_esm},
@@ -753,10 +776,13 @@ for attempt in range(1, max_retries + 1):
             st = gemmi.make_structure_from_block(doc.sole_block())
             pdb_out = out_dir / "pred.pdb"
             st.write_minimal_pdb(str(pdb_out))
+            ensure_metal_coordination_conect(pdb_out)
         except Exception as exc:
             logger.debug("[GEMMI] Conversion CIF vers PDB : %s", exc)
 
     pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
+    if pred_pdb and pred_pdb.suffix.lower() == ".pdb":
+        ensure_metal_coordination_conect(pred_pdb)
     plddt    = _parse_chai_plddt(out_dir, logger)
     return pred_pdb, plddt
 
@@ -1286,6 +1312,42 @@ def _write_chai_fasta(fasta_path: Path, protein_seq: str, ligand_smiles: str) ->
         f">ligand|name=Zn2+\n[Zn+2]\n"
     )
     fasta_path.write_text(content, encoding="utf-8")
+
+
+def _write_chai_restraints(restraints_path: Path, target_pdb: Path) -> bool:
+    """
+    Génère un fichier de contraintes CSV pour Chai-1 afin de verrouiller
+    et forcer la conservation stricte des liaisons de coordination métallique (Zn2+).
+    """
+    if not target_pdb or not target_pdb.exists():
+        return False
+
+    metal_info = analyze_metal_coordination(target_pdb)
+    if metal_info.get("metals_count", 0) == 0 or not metal_info.get("coordination_residues"):
+        return False
+
+    import re as _re
+    rows = [
+        "restraint_id,chainA,res_idxA,chainB,res_idxB,connection_type,confidence,min_distance_angstrom,max_distance_angstrom,comment"
+    ]
+    aa_map = {"CYS": "C", "HIS": "H", "ASP": "D", "GLU": "E"}
+
+    for idx, r_str in enumerate(metal_info["coordination_residues"], 1):
+        m = _re.match(r"([A-Z]{3})(\d+)", r_str)
+        if m:
+            aa_3 = m.group(1)
+            pos = m.group(2)
+            aa_1 = aa_map.get(aa_3, "C")
+            res_token = f"{aa_1}{pos}"
+            max_d = 2.6 if aa_3 == "CYS" else 2.5
+            rows.append(
+                f"restraint_zn_{idx},C,,A,{res_token},pocket,1.0,0.0,{max_d},Coordination {r_str} - Zn2+"
+            )
+
+    if len(rows) > 1:
+        restraints_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        return True
+    return False
 
 
 def _find_prediction_file(directory: Path, patterns: list[str]) -> Path | None:
