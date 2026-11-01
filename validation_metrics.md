@@ -1,3 +1,8 @@
+# Pipeline de Validation De Novo — OptoBind-AI
+
+> [!NOTE]
+> Le guide exhaustif détaillant chaque formule mathématique, calcul algorithmique et cas d'étude est documenté dans [GUIDE_METRIQUES_VALIDATION.md](file:///c:/Users/colao/Desktop/Projet%20prot%C3%A9ine/GUIDE_METRIQUES_VALIDATION.md).
+
 INSTRUCTIONS POUR LES AGENTS IA : Pipeline de Validation De Novo
 
 Contexte : Validation in silico de protéines de novo et de biosenseurs générés par RFdiffusion / ProteinMPNN. Objectif de l'Agent : Évaluer les candidats structuraux et filtrer les séquences en appliquant strictement les seuils d'acceptation ci-dessous.
