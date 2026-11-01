@@ -54,6 +54,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "top_k_per_scaffold"  : 0,
         "use_cuda"            : True,
     },
+    "pre_filter": {
+        "enabled"             : True,    # Pré-filtrage CPU ultra-rapide avant envoi GPU
+        "max_liabilities"     : 0,       # Tolérance zéro pour NG, DG, DP, poly-X
+        "filter_cysteines"    : True,    # Règle universelle de consistance des Cys
+        "min_net_charge"      : 0.8,     # Charge nette min à pH 7.4 (|q| >= 0.8)
+        "avoid_neutral_pi"    : True,    # Évite pI neutre (7.1 - 7.7)
+        "max_mpnn_score"      : 1.40,    # Score MPNN max toléré
+        "top_k_per_scaffold"  : 3,       # Nombre max de séquences d'élite qualifiées par squelette
+        "filter_native"       : True,    # Exclut seq_00 non optimisée
+    },
     "validation": {
         "rmsd_threshold"            : 2.0,   # Å (RMSD Cα global)
         "motif_rmsd_threshold"      : 1.5,   # Å (RMSD Cα sur les résidus du motif fonctionnel)

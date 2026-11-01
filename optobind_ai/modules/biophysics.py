@@ -124,6 +124,162 @@ def analyze_sequence_liabilities(sequence: str) -> dict[str, Any]:
     }
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Smart Pre-Filter Universel (CPU, 0 ms) avant inférence 3D GPU
+# ──────────────────────────────────────────────────────────────────────────────
+
+def smart_pre_filter_sequences(
+    sequences  : list[Any],
+    target_pdb : Path | str,
+    cfg        : dict[str, Any],
+    logger     : logging.Logger | None = None,
+) -> tuple[list[Any], list[tuple[Any, str]]]:
+    """
+    Pré-filtrage analytique universel (CPU, 0 ms) pour qualifier uniquement
+    les séquences d'élite vers l'inférence 3D Chai-1 / AlphaFold.
+
+    Critères universels :
+      1. Sequence Liabilities (max_liabilities = 0)
+      2. Parité et compatibilité universelle des Cystéines (avec ou sans ion métallique)
+      3. Charge nette et pI (évitement du pI neutre et charge nulle)
+      4. Score ProteinMPNN (max_mpnn_score)
+      5. Quota Top-K par squelette (diversité des scaffolds)
+
+    Returns
+    -------
+    (passed_sequences, rejected_sequences_with_reasons)
+    """
+    _log = logger or log
+    pref_cfg = cfg.get("pre_filter", {})
+    if not pref_cfg.get("enabled", True):
+        _log.info("[PRE-FILTER] Pré-filtrage désactivé via configuration.")
+        return sequences, []
+
+    max_liab        = int(pref_cfg.get("max_liabilities", 0))
+    filter_cys      = bool(pref_cfg.get("filter_cysteines", True))
+    min_charge      = float(pref_cfg.get("min_net_charge", 0.8))
+    avoid_pi        = bool(pref_cfg.get("avoid_neutral_pi", True))
+    max_mpnn        = pref_cfg.get("max_mpnn_score", 1.40)
+    max_mpnn        = float(max_mpnn) if max_mpnn is not None else None
+    top_k           = int(pref_cfg.get("top_k_per_scaffold", 3))
+    filter_native   = bool(pref_cfg.get("filter_native", True))
+
+    # Détection automatique de présence d'un ion métallique dans la cible
+    has_metal = False
+    tgt_p = Path(target_pdb) if target_pdb else None
+    if tgt_p and tgt_p.is_file():
+        metal_symbols = {"ZN", "FE", "CU", "MG", "MN", "NI", "CO", "CD"}
+        std_aas = {
+            "ALA", "CYS", "ASP", "GLU", "PHE", "GLY", "HIS", "ILE", "LYS", "LEU",
+            "MET", "ASN", "PRO", "GLN", "ARG", "SER", "THR", "VAL", "TRP", "TYR"
+        }
+        try:
+            with tgt_p.open("r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    if line.startswith(("ATOM", "HETATM")):
+                        rname = line[17:20].strip().upper()
+                        if rname not in std_aas:
+                            aname = line[12:16].strip().upper()
+                            elem = line[76:78].strip().upper() if len(line) >= 78 else aname[:2]
+                            if elem in metal_symbols or any(aname.startswith(m) for m in metal_symbols):
+                                has_metal = True
+                                break
+        except Exception as exc:
+            _log.debug("[PRE-FILTER] Erreur lecture métaux cible : %s", exc)
+
+    survivors: list[Any] = []
+    rejected: list[tuple[Any, str]] = []
+    stats = {
+        "liabilities": 0,
+        "cysteines": 0,
+        "precipitation": 0,
+        "mpnn_score": 0,
+        "native": 0,
+        "quota": 0,
+    }
+
+    for seq in sequences:
+        # Exclure seq_00 si demandé (squelette brut non optimisé)
+        if filter_native and getattr(seq, "index", -1) == 0:
+            rejected.append((seq, "Native seq_00 (non optimisée)"))
+            stats["native"] += 1
+            continue
+
+        raw_seq = getattr(seq, "sequence", "")
+        mpnn_sc = getattr(seq, "mpnn_score", 0.0)
+
+        # 1. Pièges chimiques de séquence
+        liab_info = analyze_sequence_liabilities(raw_seq)
+        if liab_info["n_liabilities"] > max_liab:
+            rejected.append((seq, f"Liabilities: {liab_info['details']}"))
+            stats["liabilities"] += 1
+            continue
+
+        # 2. Règle universelle des cystéines
+        if filter_cys:
+            c_count = raw_seq.count("C")
+            if not has_metal:
+                # Cible sans métal : toute Cys doit pouvoir s'apparier en pont disulfure
+                if c_count % 2 != 0:
+                    rejected.append((seq, f"Cys impaire ({c_count}) sans ion métallique (orpheline garantie)"))
+                    stats["cysteines"] += 1
+                    continue
+            else:
+                # Cible métallique : la sphère de coordination admet 2 à 4 Cys
+                if c_count < 2 or c_count > 4:
+                    rejected.append((seq, f"Cys={c_count} incompatible avec coordination métallique [2-4]"))
+                    stats["cysteines"] += 1
+                    continue
+
+        # 3. Risque de précipitation (pI neutre + charge quasi-nulle)
+        if avoid_pi:
+            phys = compute_physicochemical_properties(raw_seq)
+            if abs(phys["charge_ph7"]) < min_charge and (7.1 <= phys["pi"] <= 7.7):
+                rejected.append((seq, f"Risque précipitation (pI={phys['pi']:.2f}, q={phys['charge_ph7']:.2f})"))
+                stats["precipitation"] += 1
+                continue
+
+        # 4. Score ProteinMPNN
+        if max_mpnn is not None and mpnn_sc > max_mpnn:
+            rejected.append((seq, f"Score MPNN ({mpnn_sc:.2f}) > {max_mpnn:.2f}"))
+            stats["mpnn_score"] += 1
+            continue
+
+        survivors.append(seq)
+
+    # 5. Quota Top-K par squelette (pour garantir la diversité)
+    final_qualified: list[Any] = []
+    if top_k > 0 and survivors:
+        by_scaffold: dict[str, list[Any]] = {}
+        for s in survivors:
+            scaf_id = getattr(getattr(s, "scaffold", None), "name", "scaffold")
+            by_scaffold.setdefault(scaf_id, []).append(s)
+
+        for scaf_id, scaf_seqs in by_scaffold.items():
+            scaf_seqs.sort(key=lambda x: getattr(x, "mpnn_score", 999.0))
+            kept = scaf_seqs[:top_k]
+            dropped = scaf_seqs[top_k:]
+            final_qualified.extend(kept)
+            for d in dropped:
+                rejected.append((d, f"Dépassement quota Top {top_k} du scaffold"))
+                stats["quota"] += 1
+    else:
+        final_qualified = survivors
+
+    n_total = len(sequences)
+    n_kept = len(final_qualified)
+    n_rej = len(rejected)
+    gpu_saving = round(100.0 * (1.0 - n_kept / n_total), 1) if n_total > 0 else 0.0
+
+    _log.info("  🎯 Smart Pre-Filter Universel (CPU) : %d séquences → %d qualifiées pour Chai-1 (%d éliminées)",
+              n_total, n_kept, n_rej)
+    _log.info("     ↳ Rejets : %d Liabilities | %d Cys incompatibles | %d Précipitation | %d Score MPNN | %d Native | %d Quota Top-%d",
+              stats["liabilities"], stats["cysteines"], stats["precipitation"], stats["mpnn_score"], stats["native"], stats["quota"], top_k)
+    _log.info("     ↳ Économie GPU estimée : ~%.1f%% de temps de calcul économisé", gpu_saving)
+
+    return final_qualified, rejected
+
+
 def query_protein_sol(
     sequence: str,
     timeout: float = 8.0,

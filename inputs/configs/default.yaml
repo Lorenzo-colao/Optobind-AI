@@ -60,9 +60,20 @@ alphafold:
   num_trunk_recycles: 1
   num_diffn_samples : 3
   use_esm_embeddings: true
-  filter_native     : true         # Exclut seq_00 (squelette non optimisé) pour économiser le GPU
-  top_k_per_scaffold: 0            # 0 = teste toutes les séquences créées (ex: 3 pour ne valider que le top 3)
   use_cuda          : true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Smart Pre-Filter CPU (Économie de calcul GPU avant Chai-1)
+# ─────────────────────────────────────────────────────────────────────────────
+pre_filter:
+  enabled           : true         # Activer le pré-filtrage analytique universel
+  max_liabilities   : 0            # Tolérance zéro pièges chimiques (NG, DG, DP, poly-X)
+  filter_cysteines  : true         # Règle universelle de parité/compatibilité Cys
+  min_net_charge    : 0.8          # Charge nette min à pH 7.4 (|q| >= 0.8)
+  avoid_neutral_pi  : true         # Évite pI neutre (7.1 - 7.7) pour éviter précipitation
+  max_mpnn_score    : 1.40         # Score ProteinMPNN max toléré (séquence bien adaptée)
+  top_k_per_scaffold: 3            # Nombre max de séquences d'élite qualifiées par squelette
+  filter_native     : true         # Exclut seq_00 (squelette non optimisé)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Critères de validation in silico

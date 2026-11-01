@@ -144,9 +144,9 @@ def build_report(
             "rmsd_angstrom"           : f"{val.rmsd:.4f}"                  if val else "N/A",
             "motif_rmsd_angstrom"     : f"{val.motif_rmsd:.4f}"            if val else "N/A",
             "n_steric_clashes"        : str(val.n_clashes)                 if val else "N/A",
-            "passed"            : str(val.passed)            if val else "N/A",
+            "passed"            : str(val.passed) if val else ("False (Pre-Filter)" if seq.metadata.get("rejection_reason") else "N/A"),
             "scaffold_pdb"      : str(seq.scaffold.pdb_path),
-            "predicted_pdb"     : str(val.pdb_path or "N/A") if val else "N/A",
+            "predicted_pdb"     : str(val.pdb_path or "N/A") if val else (f"EXCLUDED: {seq.metadata['rejection_reason']}" if seq.metadata.get("rejection_reason") else "N/A"),
             "fasta_path"        : str(seq.fasta_path),
         }
         rows.append(row)

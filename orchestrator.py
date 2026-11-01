@@ -80,6 +80,7 @@ from optobind_ai.modules.scaffolding   import run_rfdiffusion, _build_contigs
 from optobind_ai.modules.sequencing    import run_proteinmpnn
 from optobind_ai.modules.validation    import run_alphafold
 from optobind_ai.modules.reporting     import build_report, print_summary
+from optobind_ai.modules.biophysics    import smart_pre_filter_sequences
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -239,29 +240,17 @@ def main() -> int:
     validation_results = []
     if not args.skip_validation:
         val_cfg = cfg.get("alphafold", {})
-        filter_native = val_cfg.get("filter_native", True)
-        top_k = val_cfg.get("top_k_per_scaffold", 0)
 
-        seqs_to_validate = sequences
-        if filter_native:
-            # Exclut seq_00 qui est le squelette natif non optimisé issu du PDB brut
-            seqs_to_validate = [s for s in seqs_to_validate if s.index != 0]
-
-        if top_k > 0:
-            by_scaffold: dict[str, list[DesignedSequence]] = {}
-            for s in seqs_to_validate:
-                by_scaffold.setdefault(s.scaffold.name, []).append(s)
-
-            filtered: list[DesignedSequence] = []
-            for scaf_name, scaf_seqs in by_scaffold.items():
-                scaf_seqs.sort(key=lambda x: x.mpnn_score)
-                filtered.extend(scaf_seqs[:top_k])
-            seqs_to_validate = filtered
-
-        if len(seqs_to_validate) < len(sequences):
-            logger.info("")
-            logger.info("  🎯 Smart Triage : %d séquences sélectionnées sur %d pour validation 3D (économie de calcul GPU)",
-                        len(seqs_to_validate), len(sequences))
+        # ── Smart Pre-Filter Universel CPU (0 ms) avant envoi sur GPU ────────
+        logger.info("")
+        seqs_to_validate, rejected_seqs = smart_pre_filter_sequences(
+            sequences  = sequences,
+            target_pdb = target_path,
+            cfg        = cfg,
+            logger     = logger,
+        )
+        for rej_seq, reason in rejected_seqs:
+            rej_seq.metadata["rejection_reason"] = reason
 
         logger.info("")
         logger.info("┌─ MODULE 3 : Validation (AlphaFold 3 / Chai-1) ──────────────")
