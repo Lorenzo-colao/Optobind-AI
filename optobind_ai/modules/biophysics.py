@@ -862,7 +862,13 @@ def ensure_metal_coordination_conect(
             except Exception:
                 continue
 
-            if line.startswith("HETATM") and (res_name in metal_elements or name in metal_elements):
+            is_metal = (
+                res_name in metal_elements
+                or name in metal_elements
+                or any(name.startswith(m) for m in metal_elements)
+                or line[76:78].strip().upper() in metal_elements
+            )
+            if line.startswith("HETATM") and is_metal:
                 metals.append({
                     "serial": serial, "name": name, "res_name": res_name,
                     "chain": chain, "res_seq": res_seq, "pos": pos,
@@ -975,7 +981,13 @@ def analyze_metal_coordination(
             except Exception:
                 continue
 
-            if line.startswith("HETATM") and (res_name in metal_elements or name in metal_elements):
+            is_metal = (
+                res_name in metal_elements
+                or name in metal_elements
+                or any(name.startswith(m) for m in metal_elements)
+                or line[76:78].strip().upper() in metal_elements
+            )
+            if line.startswith("HETATM") and is_metal:
                 metals.append({"name": name, "res": res_name, "chain": chain, "seq": res_seq, "pos": pos})
             elif (res_name == "CYS" and name == "SG") or \
                  (res_name == "HIS" and name in ["NE2", "ND1"]) or \
