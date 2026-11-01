@@ -30,7 +30,11 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from optobind_ai.modules.biophysics import analyze_cysteines, analyze_interface_interactions
+from optobind_ai.modules.biophysics import (
+    analyze_cysteines,
+    analyze_interface_interactions,
+    analyze_secondary_structure_and_ramachandran,
+)
 from optobind_ai.utils.io_helpers import DesignedSequence, ValidationResult
 
 
@@ -136,8 +140,8 @@ def run_alphafold(
             seq_iter.set_postfix_str(f"{seq.name.split('_')[-2]}_{seq.name.split('_')[-1]} {status} (pLDDT={res.plddt_mean:.1f})")
         m_rmsd_str = f"mRMSD={res.motif_rmsd:.2f} Å" if res.motif_rmsd != float("inf") else "mRMSD=-"
         logger.info(
-            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  hydro=%.1f%%  hbonds=%d  RMSD=%.2f Å (%s)  clashes=%d  cys_free=%d",
-            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.hydrophobic_sasa_pct, res.n_interface_hbonds, res.rmsd, m_rmsd_str, res.n_clashes, res.n_unpaired_cys,
+            "       %s  pLDDT=%.1f  pTM=%.3f  ipTM=%.3f  PAE=%.1f Å  ΔSASA=%.0f Å²  hydro=%.1f%%  hbonds=%d  SS(H/E/C)=%.0f/%.0f/%.0f%%  rama=%.1f%%  RMSD=%.2f Å (%s)  clashes=%d  cys_free=%d",
+            status, res.plddt_mean, res.ptm, res.iptm, res.pae_inter, res.delta_sasa, res.hydrophobic_sasa_pct, res.n_interface_hbonds, res.helix_pct, res.beta_pct, res.coil_pct, res.ramachandran_outliers_pct, res.rmsd, m_rmsd_str, res.n_clashes, res.n_unpaired_cys,
         )
 
     return results
@@ -203,6 +207,8 @@ def _predict_and_validate(
     plddt_thresh = DEFAULT_CONFIG["validation"]["plddt_threshold"]
     max_cys      = DEFAULT_CONFIG["validation"].get("max_unpaired_cys", 0)
     max_hydro    = DEFAULT_CONFIG["validation"].get("max_hydrophobic_sasa_pct", 35.0)
+    max_coil     = DEFAULT_CONFIG["validation"].get("max_coil_pct", 45.0)
+    max_rama     = DEFAULT_CONFIG["validation"].get("max_ramachandran_outliers_pct", 2.0)
 
     from optobind_ai.modules.sequencing import motif_positions_from_contigs
     contigs = DEFAULT_CONFIG["rfdiffusion"].get("contigs", "")
@@ -222,28 +228,43 @@ def _predict_and_validate(
     sasa, delta_sasa, hydro_pct = _compute_sasa(predicted_pdb, logger)
     cys_info = analyze_cysteines(predicted_pdb, logger=logger)
     inter_info = analyze_interface_interactions(predicted_pdb, logger=logger)
+    ss_info = analyze_secondary_structure_and_ramachandran(predicted_pdb, logger=logger)
 
     result = ValidationResult(
-        sequence                 = seq,
-        pdb_path                 = predicted_pdb,
-        plddt_mean               = plddt_mean,
-        plddt_pocket             = plddt_pocket,
-        rmsd                     = rmsd,
-        motif_rmsd               = motif_rmsd,
-        n_clashes                = n_clashes,
-        ptm                      = ptm,
-        iptm                     = iptm,
-        pae_mean                 = pae_mean,
-        pae_inter                = pae_inter,
-        sasa                     = sasa,
-        delta_sasa               = delta_sasa,
-        hydrophobic_sasa_pct     = hydro_pct,
-        n_interface_hbonds       = inter_info["n_hbonds"],
-        n_interface_salt_bridges = inter_info["n_salt_bridges"],
-        n_unpaired_cys           = cys_info["n_unpaired"],
-        unpaired_details         = cys_info["details"],
+        sequence                  = seq,
+        pdb_path                  = predicted_pdb,
+        plddt_mean                = plddt_mean,
+        plddt_pocket              = plddt_pocket,
+        rmsd                      = rmsd,
+        motif_rmsd                = motif_rmsd,
+        n_clashes                 = n_clashes,
+        ptm                       = ptm,
+        iptm                      = iptm,
+        pae_mean                  = pae_mean,
+        pae_inter                 = pae_inter,
+        sasa                      = sasa,
+        delta_sasa                = delta_sasa,
+        hydrophobic_sasa_pct      = hydro_pct,
+        n_interface_hbonds        = inter_info["n_hbonds"],
+        n_interface_salt_bridges  = inter_info["n_salt_bridges"],
+        n_unpaired_cys            = cys_info["n_unpaired"],
+        unpaired_details          = cys_info["details"],
+        helix_pct                 = ss_info["helix_pct"],
+        beta_pct                  = ss_info["beta_pct"],
+        coil_pct                  = ss_info["coil_pct"],
+        ramachandran_outliers_pct = ss_info["ramachandran_outliers_pct"],
+        n_ramachandran_outliers   = ss_info["n_ramachandran_outliers"],
+        ramachandran_details      = ss_info["ramachandran_details"],
     )
-    result.validate(rmsd_thresh, plddt_thresh, motif_rmsd_threshold=motif_thresh, max_unpaired_cys=max_cys, max_hydrophobic_sasa_pct=max_hydro)
+    result.validate(
+        rmsd_thresh,
+        plddt_thresh,
+        motif_rmsd_threshold=motif_thresh,
+        max_unpaired_cys=max_cys,
+        max_hydrophobic_sasa_pct=max_hydro,
+        max_coil_pct=max_coil,
+        max_ramachandran_outliers_pct=max_rama,
+    )
     return result
 
 
@@ -292,6 +313,8 @@ def _evaluate_single_prediction(
     plddt_thresh = cfg.get("plddt_threshold", DEFAULT_CONFIG["validation"]["plddt_threshold"])
     max_cys      = cfg.get("max_unpaired_cys", DEFAULT_CONFIG["validation"].get("max_unpaired_cys", 0))
     max_hydro    = cfg.get("max_hydrophobic_sasa_pct", DEFAULT_CONFIG["validation"].get("max_hydrophobic_sasa_pct", 35.0))
+    max_coil     = cfg.get("max_coil_pct", DEFAULT_CONFIG["validation"].get("max_coil_pct", 45.0))
+    max_rama     = cfg.get("max_ramachandran_outliers_pct", DEFAULT_CONFIG["validation"].get("max_ramachandran_outliers_pct", 2.0))
 
     from optobind_ai.modules.sequencing import motif_positions_from_contigs
     contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
@@ -311,28 +334,43 @@ def _evaluate_single_prediction(
     sasa, delta_sasa, hydro_pct = _compute_sasa(pred_pdb, logger)
     cys_info = analyze_cysteines(pred_pdb, logger=logger)
     inter_info = analyze_interface_interactions(pred_pdb, logger=logger)
+    ss_info = analyze_secondary_structure_and_ramachandran(pred_pdb, logger=logger)
 
     res = ValidationResult(
-        sequence                 = seq,
-        pdb_path                 = pred_pdb,
-        plddt_mean               = plddt_mean,
-        plddt_pocket             = plddt_pocket,
-        rmsd                     = rmsd,
-        motif_rmsd               = motif_rmsd,
-        n_clashes                = n_clashes,
-        ptm                      = ptm,
-        iptm                     = iptm,
-        pae_mean                 = pae_mean,
-        pae_inter                = pae_inter,
-        sasa                     = sasa,
-        delta_sasa               = delta_sasa,
-        hydrophobic_sasa_pct     = hydro_pct,
-        n_interface_hbonds       = inter_info["n_hbonds"],
-        n_interface_salt_bridges = inter_info["n_salt_bridges"],
-        n_unpaired_cys           = cys_info["n_unpaired"],
-        unpaired_details         = cys_info["details"],
+        sequence                  = seq,
+        pdb_path                  = pred_pdb,
+        plddt_mean                = plddt_mean,
+        plddt_pocket              = plddt_pocket,
+        rmsd                      = rmsd,
+        motif_rmsd                = motif_rmsd,
+        n_clashes                 = n_clashes,
+        ptm                       = ptm,
+        iptm                      = iptm,
+        pae_mean                  = pae_mean,
+        pae_inter                 = pae_inter,
+        sasa                      = sasa,
+        delta_sasa                = delta_sasa,
+        hydrophobic_sasa_pct      = hydro_pct,
+        n_interface_hbonds        = inter_info["n_hbonds"],
+        n_interface_salt_bridges  = inter_info["n_salt_bridges"],
+        n_unpaired_cys            = cys_info["n_unpaired"],
+        unpaired_details          = cys_info["details"],
+        helix_pct                 = ss_info["helix_pct"],
+        beta_pct                  = ss_info["beta_pct"],
+        coil_pct                  = ss_info["coil_pct"],
+        ramachandran_outliers_pct = ss_info["ramachandran_outliers_pct"],
+        n_ramachandran_outliers   = ss_info["n_ramachandran_outliers"],
+        ramachandran_details      = ss_info["ramachandran_details"],
     )
-    res.validate(rmsd_thresh, plddt_thresh, motif_rmsd_threshold=motif_thresh, max_unpaired_cys=max_cys, max_hydrophobic_sasa_pct=max_hydro)
+    res.validate(
+        rmsd_thresh,
+        plddt_thresh,
+        motif_rmsd_threshold=motif_thresh,
+        max_unpaired_cys=max_cys,
+        max_hydrophobic_sasa_pct=max_hydro,
+        max_coil_pct=max_coil,
+        max_ramachandran_outliers_pct=max_rama,
+    )
     return res
 
 
@@ -1264,27 +1302,45 @@ def _dry_run_validation(
     n_clashes    = random.randint(0, 3)
 
     hydro_pct    = round(random.uniform(5.0, 22.0), 1)
+    helix_pct    = round(random.uniform(50.0, 75.0), 1)
+    beta_pct     = round(random.uniform(0.0, 15.0), 1)
+    coil_pct     = round(100.0 - helix_pct - beta_pct, 1)
+    rama_out     = round(random.uniform(0.0, 1.2), 1)
 
     result = ValidationResult(
-        sequence                 = seq,
-        pdb_path                 = None,
-        plddt_mean               = plddt_mean,
-        plddt_pocket             = plddt_pocket,
-        rmsd                     = rmsd,
-        motif_rmsd               = motif_rmsd,
-        n_clashes                = n_clashes,
-        ptm                      = ptm,
-        iptm                     = iptm,
-        pae_mean                 = pae_mean,
-        pae_inter                = pae_inter,
-        sasa                     = sasa,
-        delta_sasa               = delta_sasa,
-        hydrophobic_sasa_pct     = hydro_pct,
-        n_interface_hbonds       = random.randint(1, 4),
-        n_interface_salt_bridges = random.randint(0, 1),
-        n_unpaired_cys           = 0,
-        unpaired_details         = "-",
-        metadata                 = {"dry_run": True},
+        sequence                  = seq,
+        pdb_path                  = None,
+        plddt_mean                = plddt_mean,
+        plddt_pocket              = plddt_pocket,
+        rmsd                      = rmsd,
+        motif_rmsd                = motif_rmsd,
+        n_clashes                 = n_clashes,
+        ptm                       = ptm,
+        iptm                      = iptm,
+        pae_mean                  = pae_mean,
+        pae_inter                 = pae_inter,
+        sasa                      = sasa,
+        delta_sasa                = delta_sasa,
+        hydrophobic_sasa_pct      = hydro_pct,
+        n_interface_hbonds        = random.randint(1, 4),
+        n_interface_salt_bridges  = random.randint(0, 1),
+        n_unpaired_cys            = 0,
+        unpaired_details          = "-",
+        helix_pct                 = helix_pct,
+        beta_pct                  = beta_pct,
+        coil_pct                  = coil_pct,
+        ramachandran_outliers_pct = rama_out,
+        n_ramachandran_outliers   = 1 if rama_out > 0 else 0,
+        ramachandran_details      = "-" if rama_out == 0 else "GLY28",
+        metadata                  = {"dry_run": True},
     )
-    result.validate(rmsd_threshold=2.0, plddt_threshold=90.0, motif_rmsd_threshold=1.5, max_unpaired_cys=0, max_hydrophobic_sasa_pct=35.0)
+    result.validate(
+        rmsd_threshold=2.0,
+        plddt_threshold=90.0,
+        motif_rmsd_threshold=1.5,
+        max_unpaired_cys=0,
+        max_hydrophobic_sasa_pct=35.0,
+        max_coil_pct=45.0,
+        max_ramachandran_outliers_pct=2.0,
+    )
     return result

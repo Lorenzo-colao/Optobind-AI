@@ -59,8 +59,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "motif_rmsd_threshold"      : 1.5,   # Å (RMSD Cα sur les résidus du motif fonctionnel)
         "plddt_threshold"           : 90.0,  # score AlphaFold
         "clash_vdw_cutoff"          : 0.6,   # fraction de rayon de Van der Waals
-        "max_unpaired_cys"          : 0,     # Nombre maximal de cystéines orphelines (0 = tolérance zéro)
-        "max_hydrophobic_sasa_pct"  : 35.0,  # Seuil max de surface hydrophobe (V, L, I, F, W, M en % de SASA)
+        "max_unpaired_cys"              : 0,     # Nombre maximal de cystéines orphelines (0 = tolérance zéro)
+        "max_hydrophobic_sasa_pct"      : 35.0,  # Seuil max de surface hydrophobe (V, L, I, F, W, M en % de SASA)
+        "max_coil_pct"                  : 45.0,  # Seuil max de boucles/régions non structurées (% Coil)
+        "max_ramachandran_outliers_pct" : 2.0,   # Seuil max d'angles dièdres interdits (% Ramachandran outliers)
     },
 }
 

@@ -82,6 +82,12 @@ class ValidationResult:
     solubility_percent       : float | None = None  # % de solubilité estimé Protein-Sol
     n_unpaired_cys           : int = 0              # Nombre de cystéines orphelines (non coordonnées / non pontées)
     unpaired_details         : str = ""             # Détail des cystéines libres (ex: C4(exp:29Å²))
+    helix_pct                : float = 0.0          # % résidus en hélice alpha (runs >= 4)
+    beta_pct                 : float = 0.0          # % résidus en brin beta (runs >= 2)
+    coil_pct                 : float = 0.0          # % résidus en boucle/coil
+    ramachandran_outliers_pct: float = 0.0          # % résidus outliers Ramachandran (< 2.0%)
+    n_ramachandran_outliers  : int   = 0            # Nombre absolu d'outliers
+    ramachandran_details     : str   = ""           # Détail des résidus outliers (ex: GLY28...)
     passed               : bool  = False
     metadata             : dict  = field(default_factory=dict)
 
@@ -95,6 +101,8 @@ class ValidationResult:
         plddt_threshold: float | None = None,
         max_unpaired_cys: int | None = 0,
         max_hydrophobic_sasa_pct: float | None = 35.0,
+        max_coil_pct: float | None = 45.0,
+        max_ramachandran_outliers_pct: float | None = 2.0,
     ) -> bool:
         """Applique les critères de succès et met à jour ``passed``."""
         r_thresh = rmsd_threshold if rmsd_threshold is not None else rmsd_thresh
@@ -103,12 +111,16 @@ class ValidationResult:
         cys_ok   = (self.n_unpaired_cys <= max_unpaired_cys) if max_unpaired_cys is not None else True
         hydro_ok = (self.hydrophobic_sasa_pct <= max_hydrophobic_sasa_pct) if max_hydrophobic_sasa_pct is not None else True
         motif_ok = (self.motif_rmsd < m_thresh) if (m_thresh is not None and self.motif_rmsd != float("inf")) else True
+        coil_ok  = (self.coil_pct <= max_coil_pct) if max_coil_pct is not None else True
+        rama_ok  = (self.ramachandran_outliers_pct <= max_ramachandran_outliers_pct) if max_ramachandran_outliers_pct is not None else True
         self.passed = (
             self.rmsd             < r_thresh   and
             self.plddt_mean       > p_thresh   and
             motif_ok                           and
             cys_ok                             and
-            hydro_ok
+            hydro_ok                           and
+            coil_ok                            and
+            rama_ok
         )
         return self.passed
 

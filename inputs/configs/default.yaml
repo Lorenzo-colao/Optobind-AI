@@ -74,3 +74,5 @@ validation:
   clash_vdw_cutoff        : 0.6    # Fraction du rayon VdW pour détecter un clash
   max_unpaired_cys        : 0      # Tolérance cystéines orphelines (0 = aucune tolérée pour éviter agrégation)
   max_hydrophobic_sasa_pct: 35.0   # % max de surface hydrophobe (V,L,I,F,W,M <= 35% de la surface)
+  max_coil_pct            : 45.0   # % max de boucles/régions non structurées (anti-molten globule)
+  max_ramachandran_outliers_pct: 2.0 # % max de résidus hors zones autorisées du diagramme de Ramachandran

@@ -52,6 +52,12 @@ _CSV_HEADERS = [
     "n_interface_salt_bridges",
     "n_unpaired_cys",
     "unpaired_cys_details",
+    "helix_pct",
+    "beta_pct",
+    "coil_pct",
+    "ramachandran_outliers_pct",
+    "n_ramachandran_outliers",
+    "ramachandran_details",
     "rmsd_angstrom",
     "motif_rmsd_angstrom",
     "n_steric_clashes",
@@ -123,6 +129,12 @@ def build_report(
             "n_interface_salt_bridges": str(val.n_interface_salt_bridges)  if val else "N/A",
             "n_unpaired_cys"          : str(val.n_unpaired_cys)            if val else "N/A",
             "unpaired_cys_details"    : val.unpaired_details               if val else "N/A",
+            "helix_pct"               : f"{val.helix_pct:.1f}%"            if val else "N/A",
+            "beta_pct"                : f"{val.beta_pct:.1f}%"             if val else "N/A",
+            "coil_pct"                : f"{val.coil_pct:.1f}%"             if val else "N/A",
+            "ramachandran_outliers_pct": f"{val.ramachandran_outliers_pct:.1f}%" if val else "N/A",
+            "n_ramachandran_outliers" : str(val.n_ramachandran_outliers)   if val else "N/A",
+            "ramachandran_details"    : val.ramachandran_details           if val else "N/A",
             "rmsd_angstrom"           : f"{val.rmsd:.4f}"                  if val else "N/A",
             "motif_rmsd_angstrom"     : f"{val.motif_rmsd:.4f}"            if val else "N/A",
             "n_steric_clashes"        : str(val.n_clashes)                 if val else "N/A",
@@ -194,22 +206,22 @@ def print_summary(
     n_fail = len(validation_results) - n_pass
     n_no_val = len(sequences) - len(validation_results)
 
-    sep = "-" * 136
+    sep = "-" * 144
 
-    _print(f"\n{BOLD}{'=' * 136}{RESET}")
+    _print(f"\n{BOLD}{'=' * 144}{RESET}")
     _print(f"{BOLD}  RESUME OptoBind-AI{RESET}")
     _print(f"{sep}")
     _print(f"  Squelettes generes  : {len(scaffolds)}")
     _print(f"  Sequences optimisees: {len(sequences)}")
     _print(f"  Variants valides    : {GREEN}{n_pass} PASS{RESET}  /  {RED}{n_fail} FAIL{RESET}"
            + (f"  /  {YELLOW}{n_no_val} non valides{RESET}" if n_no_val else ""))
-    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A  |  mRMSD <= 1.5 A  |  Cys orphelines = 0  |  %Hydro <= 35%")
+    _print(f"  Seuils appliques    : pLDDT > {plddt_threshold}  |  RMSD < {rmsd_threshold} A  |  mRMSD <= 1.5 A  |  Cys = 0  |  %Hydro <= 35%  |  %Coil <= 45%  |  Rama <= 2%")
     _print(f"{sep}")
 
     if validation_results:
         header = (
-            f"  {'Variant':<31} {'pLDDT':>5} {'pTM':>5} {'ipTM':>5} {'PAE':>4} {'dSASA':>5} "
-            f"{'%Hyd':>5} {'HB':>2} {'SB':>2} {'pI':>5} {'GRAVY':>5} {'Solub':>5} {'Cys':>4} {'RMSD':>5} {'mRMSD':>5} {'Clash':>5} {'Status':>7}"
+            f"  {'Variant':<28} {'pLDDT':>5} {'pTM':>5} {'ipTM':>5} {'PAE':>4} {'dSASA':>5} "
+            f"{'%Hyd':>5} {'HB':>2} {'SB':>2} {'pI':>5} {'GRAVY':>5} {'Solub':>5} {'SS(H/E/C)':>9} {'Rama':>5} {'Cys':>4} {'RMSD':>5} {'mRMSD':>5} {'Clash':>5} {'Status':>7}"
         )
         _print(header)
         _print(f"  {sep[2:]}")
@@ -219,11 +231,13 @@ def print_summary(
             sol_str = f"{v.solubility_score:.2f}" if v.solubility_score is not None else "-"
             cys_str = "0" if v.n_unpaired_cys == 0 else f"{v.n_unpaired_cys}(C{v.unpaired_details.split('(')[0][1:]})"[:4]
             m_rmsd_str = f"{v.motif_rmsd:.2f}" if v.motif_rmsd != float("inf") else "inf"
+            ss_str = f"{int(v.helix_pct):>2}/{int(v.beta_pct):>2}/{int(v.coil_pct):>2}%"
+            rama_str = f"{v.ramachandran_outliers_pct:>4.1f}%"
             _print(
-                f"  {v.sequence.name:<31} {v.plddt_mean:>5.1f} "
+                f"  {v.sequence.name:<28} {v.plddt_mean:>5.1f} "
                 f"{v.ptm:>5.2f} {v.iptm:>5.2f} {v.pae_inter:>4.1f} {v.delta_sasa:>5.0f} "
                 f"{v.hydrophobic_sasa_pct:>4.1f}% {v.n_interface_hbonds:>2d} {v.n_interface_salt_bridges:>2d} "
-                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>5.2f} {sol_str:>5} {cys_str:>4} "
+                f"{v.sequence.pi:>5.2f} {v.sequence.gravy:>5.2f} {sol_str:>5} {ss_str:>9} {rama_str:>5} {cys_str:>4} "
                 f"{v.rmsd:>5.2f} {m_rmsd_str:>5} {v.n_clashes:>5d} "
                 f"{color}{status:>7}{RESET}"
             )
@@ -233,4 +247,4 @@ def print_summary(
     _print(f"{sep}")
     _print(f"  Rapport CSV   : {report_path}")
     _print(f"  Rapport Excel : {report_path.with_suffix('.xlsx')}")
-    _print(f"{'=' * 136}{RESET}\n")
+    _print(f"{'=' * 144}{RESET}\n")

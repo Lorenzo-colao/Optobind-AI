@@ -18,6 +18,7 @@ Ce module combine :
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import re
 from typing import Any
 
@@ -441,4 +442,166 @@ def analyze_interface_interactions(
 
     except Exception as exc:
         _log.debug("[BIOPHYSICS] Erreur lors de l'analyse des interactions d'interface : %s", exc)
+        return default_result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Analyse des structures secondaires et du diagramme de Ramachandran
+# ──────────────────────────────────────────────────────────────────────────────
+
+def analyze_secondary_structure_and_ramachandran(
+    pdb_path: Path | str | None,
+    logger: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """
+    Analyse les angles dièdres du squelette (φ, ψ) de la protéine de novo pour :
+      1. Assigner les structures secondaires (% Hélice α, % Brin β, % Boucle/Coil)
+         avec filtre physique de consécutivité (Hélice >= 4 résidus, Brin >= 2 résidus).
+      2. Détecter les résidus en régions énergétiquement interdites (Ramachandran Outliers).
+
+    Fonctionne en pur Python/NumPy sans aucune dépendance externe (mkdssp / C++ non requis).
+
+    Returns
+    -------
+    dict avec :
+      'helix_pct', 'beta_pct', 'coil_pct',
+      'n_helix', 'n_beta', 'n_coil',
+      'ramachandran_outliers_pct', 'n_ramachandran_outliers', 'ramachandran_details'.
+    """
+    _log = logger or log
+    default_result: dict[str, Any] = {
+        "helix_pct": 0.0,
+        "beta_pct": 0.0,
+        "coil_pct": 100.0,
+        "n_helix": 0,
+        "n_beta": 0,
+        "n_coil": 0,
+        "ramachandran_outliers_pct": 0.0,
+        "n_ramachandran_outliers": 0,
+        "ramachandran_details": "-",
+    }
+
+    if not pdb_path:
+        return default_result
+
+    path = Path(pdb_path)
+    if not path.is_file():
+        return default_result
+
+    try:
+        from Bio.PDB import PDBParser, MMCIFParser, Polypeptide
+
+        is_cif = path.suffix.lower() in [".cif", ".mmcif"]
+        parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
+        structure = parser.get_structure("struct_dssp", str(path))
+
+        ppb = Polypeptide.PPBuilder()
+        peptides = ppb.build_peptides(structure)
+
+        if not peptides:
+            return default_result
+
+        phi_psi_map: list[tuple[str, int, float | None, float | None]] = []
+        for pp in peptides:
+            for res, (phi, psi) in zip(pp, pp.get_phi_psi_list()):
+                p_deg = round(phi * 180.0 / 3.14159265, 1) if phi is not None else None
+                s_deg = round(psi * 180.0 / 3.14159265, 1) if psi is not None else None
+                phi_psi_map.append((res.resname, res.id[1], p_deg, s_deg))
+
+        total = len(phi_psi_map)
+        if total == 0:
+            return default_result
+
+        raw_ss: list[str] = []
+        outliers: list[str] = []
+
+        for rname, rid, phi, psi in phi_psi_map:
+            if phi is None or psi is None:
+                raw_ss.append("C")
+                continue
+
+            # ── Vérification Ramachandran (zones autorisées vs interdites) ──
+            is_outlier = False
+            if rname == "GLY":
+                if abs(phi) < 20 and abs(psi) < 20:
+                    is_outlier = True
+            elif rname == "PRO":
+                if not (-110 <= phi <= -30 and -80 <= psi <= 190):
+                    is_outlier = True
+            else:
+                alpha_zone = (-160 <= phi <= -25 and -90 <= psi <= 50)
+                beta_zone = (-180 <= phi <= -40 and (70 <= psi <= 180 or -180 <= psi <= -150))
+                l_alpha_zone = (30 <= phi <= 100 and 10 <= psi <= 90)
+                if not (alpha_zone or beta_zone or l_alpha_zone):
+                    is_outlier = True
+
+            if is_outlier:
+                outliers.append(f"{rname}{rid}(φ={int(phi)}°,ψ={int(psi)}°)")
+
+            # ── Affectation locale selon les bassins dièdres ──
+            if -140 <= phi <= -30 and -90 <= psi <= -10:
+                raw_ss.append("H")
+            elif -180 <= phi <= -50 and (90 <= psi <= 180 or -180 <= psi <= -160):
+                raw_ss.append("E")
+            else:
+                raw_ss.append("C")
+
+        # ── Filtre de consécutivité (Hélice >= 4 résidus, Brin >= 2 résidus) ──
+        filtered_ss = ["C"] * total
+
+        # Hélices α (runs >= 4)
+        i = 0
+        while i < total:
+            if raw_ss[i] == "H":
+                j = i
+                while j < total and raw_ss[j] == "H":
+                    j += 1
+                if j - i >= 4:
+                    for k in range(i, j):
+                        filtered_ss[k] = "H"
+                i = j
+            else:
+                i += 1
+
+        # Brins β (runs >= 2)
+        i = 0
+        while i < total:
+            if raw_ss[i] == "E":
+                j = i
+                while j < total and raw_ss[j] == "E":
+                    j += 1
+                if j - i >= 2:
+                    for k in range(i, j):
+                        filtered_ss[k] = "E"
+                i = j
+            else:
+                i += 1
+
+        n_h = sum(1 for s in filtered_ss if s == "H")
+        n_e = sum(1 for s in filtered_ss if s == "E")
+        n_c = total - n_h - n_e
+
+        helix_pct = round(100.0 * n_h / total, 1)
+        beta_pct = round(100.0 * n_e / total, 1)
+        coil_pct = round(100.0 * n_c / total, 1)
+
+        evaluated_angles = sum(1 for _, _, p, s in phi_psi_map if p is not None and s is not None)
+        outlier_pct = round(100.0 * len(outliers) / evaluated_angles, 1) if evaluated_angles else 0.0
+
+        details = ", ".join(outliers[:3]) if outliers else "-"
+
+        return {
+            "helix_pct": helix_pct,
+            "beta_pct": beta_pct,
+            "coil_pct": coil_pct,
+            "n_helix": n_h,
+            "n_beta": n_e,
+            "n_coil": n_c,
+            "ramachandran_outliers_pct": outlier_pct,
+            "n_ramachandran_outliers": len(outliers),
+            "ramachandran_details": details,
+        }
+
+    except Exception as exc:
+        _log.debug("[BIOPHYSICS] Erreur analyse structures secondaires / Ramachandran : %s", exc)
         return default_result
