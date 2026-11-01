@@ -297,13 +297,13 @@ def _evaluate_single_prediction(
             st = gemmi.make_structure_from_block(doc.sole_block())
             pdb_out = out_dir / "pred.pdb"
             st.write_minimal_pdb(str(pdb_out))
-            ensure_metal_coordination_conect(pdb_out)
+            ensure_metal_coordination_conect(pdb_out, target_pdb=target_pdb)
         except Exception as exc:
             logger.debug("[GEMMI] Conversion CIF vers PDB : %s", exc)
 
     pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
     if pred_pdb and pred_pdb.suffix.lower() == ".pdb":
-        ensure_metal_coordination_conect(pred_pdb)
+        ensure_metal_coordination_conect(pred_pdb, target_pdb=target_pdb)
     plddt_scores = _parse_chai_plddt(out_dir, logger)
     plddt_mean = sum(plddt_scores) / len(plddt_scores) if plddt_scores else 0.0
 
@@ -776,13 +776,13 @@ for attempt in range(1, max_retries + 1):
             st = gemmi.make_structure_from_block(doc.sole_block())
             pdb_out = out_dir / "pred.pdb"
             st.write_minimal_pdb(str(pdb_out))
-            ensure_metal_coordination_conect(pdb_out)
+            ensure_metal_coordination_conect(pdb_out, target_pdb=target_pdb)
         except Exception as exc:
             logger.debug("[GEMMI] Conversion CIF vers PDB : %s", exc)
 
     pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
     if pred_pdb and pred_pdb.suffix.lower() == ".pdb":
-        ensure_metal_coordination_conect(pred_pdb)
+        ensure_metal_coordination_conect(pred_pdb, target_pdb=target_pdb)
     plddt    = _parse_chai_plddt(out_dir, logger)
     return pred_pdb, plddt
 

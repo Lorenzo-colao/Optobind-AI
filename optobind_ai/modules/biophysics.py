@@ -823,11 +823,13 @@ def analyze_secondary_structure_and_ramachandran(
 def ensure_metal_coordination_conect(
     pdb_path: Path | str,
     cutoff: float = 2.8,
+    target_pdb: Path | str | None = None,
 ) -> dict[str, Any]:
     """
     Détecte les ions métalliques et les atomes coordinateurs (Cys SG, His NE2/ND1,
     Asp OD, Glu OE) dans un PDB et y injecte explicitement les enregistrements LINK
     et CONECT pour garantir le maintien visuel et structural des liaisons de coordination.
+    Transfère également les enregistrements CONECT du ligand organique depuis target_pdb.
     """
     path = Path(pdb_path)
     if not path.is_file():
@@ -882,9 +884,6 @@ def ensure_metal_coordination_conect(
                     "chain": chain, "res_seq": res_seq, "pos": pos,
                 })
 
-    if not metals or not coord_candidates:
-        return {"metals": len(metals), "bonds": 0}
-
     new_links = []
     new_conects = []
     bonds_count = 0
@@ -908,6 +907,25 @@ def ensure_metal_coordination_conect(
                 chunk = bonded_serials[chunk_start:chunk_start + 4]
                 s_str = "".join(f"{s:5d}" for s in chunk)
                 new_conects.append(f"CONECT{m['serial']:5d}{s_str}")
+
+    # Transférer les CONECT du ligand organique depuis target_pdb si présent
+    if target_pdb:
+        t_path = Path(target_pdb)
+        if t_path.is_file():
+            t_lines = t_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            # Chercher le serial de départ du ligand dans target et dans pred
+            t_lig_serials = [int(l[6:11]) for l in t_lines if l.startswith("HETATM") and l[21] == "B"]
+            p_lig_serials = [int(l[6:11]) for l in lines if l.startswith("HETATM") and l[21] == "B"]
+            if t_lig_serials and p_lig_serials:
+                offset = min(p_lig_serials) - min(t_lig_serials)
+                min_t, max_t = min(t_lig_serials), max(t_lig_serials)
+                for l in t_lines:
+                    if l.startswith("CONECT"):
+                        parts = [int(p) for p in l.split()[1:]]
+                        if all(min_t <= p <= max_t for p in parts):
+                            shifted = [p + offset for p in parts]
+                            s_str = "".join(f"{p:5d}" for p in shifted)
+                            new_conects.append(f"CONECT{s_str}")
 
     header = []
     body = []
