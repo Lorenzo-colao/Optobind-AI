@@ -221,7 +221,7 @@ def main() -> int:
     # MODULE 2 — Design des séquences (ProteinMPNN)
     # ══════════════════════════════════════════════════════════════════════════
     logger.info("")
-    logger.info("┌─ MODULE 2 : Séquençage (ProteinMPNN) ───────────────────────")
+    logger.info("┌─ MODULE 2 : Séquençage (ProteinMPNN / LigandMPNN) ──────────")
     t0 = time.time()
     sequences = run_proteinmpnn(
         scaffolds   = scaffolds,
@@ -229,7 +229,9 @@ def main() -> int:
         ph          = ph_target,
         dry_run     = args.dry_run,
         cfg         = {**cfg.get("proteinmpnn", {}),
-                       "contigs": _build_contigs(cfg.get("rfdiffusion", {}), backbone_len)},
+                       "contigs": _build_contigs(cfg.get("rfdiffusion", {}), backbone_len),
+                       "target_pdb": target_path,
+                       "ligand_file": ligand_path},
         logger      = logger,
     )
     logger.info("└─ Séquençage terminé en %.1fs — %d séquences optimisées.", time.time() - t0, len(sequences))

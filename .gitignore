@@ -14,6 +14,7 @@ weights/alphafold3/
 # ── Dépôts tiers clonés (automatiquement clonés par setup_env.sh) ─────────────
 RFdiffusion/
 ProteinMPNN/
+LigandMPNN/
 
 # ── Sorties et logs de calculs ────────────────────────────────────────────────
 outputs/

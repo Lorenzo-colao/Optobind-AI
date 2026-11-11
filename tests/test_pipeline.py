@@ -217,6 +217,31 @@ class TestSequencing:
             assert len(s.sequence) == 75
             assert s.fasta_path.exists()
 
+    def test_auto_model_selection(self, dummy_target, dummy_ligand, tmp_path):
+        from optobind_ai.modules.sequencing import detect_optimal_mpnn_model
+
+        # 1. Cible avec ion métallique (dummy_target contient ZN)
+        model, reason = detect_optimal_mpnn_model(target_pdb=dummy_target)
+        assert model == "ligandmpnn"
+        assert "métallique" in reason or "hétéroatomes" in reason
+
+        # 2. Cible avec fichier ligand
+        pure_protein = tmp_path / "pure.pdb"
+        pure_protein.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C  \nEND\n")
+        model, _ = detect_optimal_mpnn_model(target_pdb=pure_protein, ligand_file=dummy_ligand)
+        assert model == "ligandmpnn"
+
+        # 3. Cible purement protéique (sans ligand ni métal)
+        model, reason = detect_optimal_mpnn_model(target_pdb=pure_protein)
+        assert model == "proteinmpnn"
+        assert "protéique pure" in reason
+
+        # 4. Forçage utilisateur via config
+        model, _ = detect_optimal_mpnn_model(target_pdb=dummy_target, configured_model="proteinmpnn")
+        assert model == "proteinmpnn"
+        model, _ = detect_optimal_mpnn_model(target_pdb=pure_protein, configured_model="ligandmpnn")
+        assert model == "ligandmpnn"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Tests — Module Validation (dry_run)

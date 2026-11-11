@@ -90,6 +90,19 @@ else
     echo "  ✓ ProteinMPNN_v_48_020.pt déjà présent."
 fi
 
+if [ ! -d "LigandMPNN" ]; then
+    echo "  -> Clonage de LigandMPNN..."
+    git clone --depth 1 https://github.com/dauparas/LigandMPNN.git LigandMPNN || true
+fi
+
+if [ ! -f "$WEIGHTS_DIR/ligandmpnn_v_32_010_25.pt" ]; then
+    echo "  -> Téléchargement de ligandmpnn_v_32_010_25.pt (~10 Mo)..."
+    wget -c -O "$WEIGHTS_DIR/ligandmpnn_v_32_010_25.pt" https://files.ipd.uw.edu/pub/ligandmpnn/ligandmpnn_v_32_010_25.pt || \
+    echo "  ⚠ Téléchargement échoué, téléchargez manuellement avec wget."
+else
+    echo "  ✓ ligandmpnn_v_32_010_25.pt déjà présent."
+fi
+
 # ── 5. Création du fichier .env local ───────────────────────────────────────
 echo ""
 echo "  [4/5] Création de .env (variables d'environnement locales)..."

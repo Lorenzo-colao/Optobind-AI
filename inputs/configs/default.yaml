@@ -36,10 +36,15 @@ rfdiffusion:
   seed              : 42
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Module 2 — ProteinMPNN
+# Module 2 — ProteinMPNN & LigandMPNN
 # ─────────────────────────────────────────────────────────────────────────────
 proteinmpnn:
+  # Mode de sélection : "auto" (recommandé), "ligandmpnn", ou "proteinmpnn"
+  # En mode "auto", le pipeline bascule intelligemment sur LigandMPNN dès qu'un
+  # ligand chimique ou ion métallique est détecté, et ProteinMPNN sinon.
+  model             : "auto"
   model_weights     : "weights/ProteinMPNN_v_48_020.pt"
+  ligandmpnn_weights: "weights/ligandmpnn_v_32_010_25.pt"
   # Température d'échantillonnage : 0.1 (conservateur) à 0.5 (diversité)
   sampling_temp     : 0.1
   num_seq_per_target: 8            # Séquences générées par squelette
@@ -47,8 +52,10 @@ proteinmpnn:
   use_cuda          : true
   seed              : 42
   # Verrouille automatiquement les résidus du motif (segments "A1-4" des contigs)
-  # pour toute cible : ProteinMPNN ne les mute pas.
+  # pour toute cible : le modèle ne les mute pas.
   fix_motif         : true
+  # Rayon de prise en compte du contexte atomique ligand/métal (Å) pour LigandMPNN
+  ligand_cutoff     : 8.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module 3 — Validation structurale

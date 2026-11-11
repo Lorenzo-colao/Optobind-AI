@@ -23,6 +23,7 @@ numpy<2.0
 openbabel-wheel
 biopython
 rdkit
+prody
 
 # ── Utilitaires debug / logging ───────────────────────────────────────────────
 icecream

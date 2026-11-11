@@ -37,12 +37,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "seed"                : 42,
     },
     "proteinmpnn": {
+        "model"               : "auto",      # "auto" | "ligandmpnn" | "proteinmpnn"
         "model_weights"       : "weights/ProteinMPNN_v_48_020.pt",
+        "ligandmpnn_weights"  : "weights/ligandmpnn_v_32_010_25.pt",
         "sampling_temp"       : 0.1,
         "num_seq_per_target"  : 8,
         "backbone_noise"      : 0.00,
         "use_cuda"            : True,
         "seed"                : 42,
+        "fix_motif"           : True,
+        "ligand_cutoff"       : 8.0,
     },
     "alphafold": {
         "backend"             : "chai-1",   # "alphafold3" | "chai-1" | "esmfold"
