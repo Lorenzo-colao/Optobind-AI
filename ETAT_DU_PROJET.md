@@ -180,14 +180,18 @@ L'analyse du run GPU sur Colab (`run_1793495836`) a permis d'isoler un candidat 
 
 ---
 
-## 7. Tableau Comparatif : ProteinMPNN vs LigandMPNN
+## 7. Sélection Intelligente : ProteinMPNN vs LigandMPNN
 
-| Paramètre | **ProteinMPNN Vanilla (Actuel)** | **LigandMPNN (Évolution Prévue)** |
+Le pipeline dispose désormais d'un **moteur de détection et de sélection automatique** (`detect_optimal_mpnn_model`) :
+
+| Paramètre | **ProteinMPNN Vanilla** | **LigandMPNN (Intégré & Opérationnel)** |
 | :--- | :--- | :--- |
+| **Cas d'activation automatique** | Cible purement protéique (aucun hétéroatome). | Cible contenant un ligand organique ou un ion métallique. |
 | **Entrées vues par le réseau** | Coordonnées du squelette protéique ($N, C\alpha, C, O$). | Squelette protéique **+ Atomes du ligand DFHBI-1T + Ion $\text{Zn}^{2+}$**. |
-| **Prise en compte du DFHBI-1T** | **Aveugle.** Il remplit la poche d'après la courbure du backbone sans voir les atomes chimiques du ligand. | **Directe et explicite.** Il place des chaînes latérales formant des ponts H et du packing $\pi$-$\pi$ sur les atomes du ligand. |
-| **Risques de mutations** | Risque d'insérer des résidus encombrants ou mal orientés dans la poche. | Poche sculptée sur-mesure pour accueillir le ligand sans conflit stérique. |
+| **Prise en compte du DFHBI-1T** | **Aveugle.** Il remplit la poche d'après la courbure du backbone. | **Directe et explicite.** Il place des chaînes latérales formant des ponts H et du packing $\pi$-$\pi$ sur les atomes du ligand. |
+| **Risques de mutations** | Risque d'insérer des résidus encombrants dans la poche. | Poche sculptée sur-mesure pour accueillir le ligand sans conflit stérique. |
 | **Taux de succès au laboratoire** | ~5 à 15 % de designs actifs *in vitro*. | **> 50 à 70 %** de designs actifs *in vitro* (littérature David Baker 2023). |
+| **Sécurité (Fallback)** | Modèle par défaut si absence de ligand. | Si indisponible, bascule automatique instantanée sur ProteinMPNN. |
 
 ---
 
@@ -195,9 +199,8 @@ L'analyse du run GPU sur Colab (`run_1793495836`) a permis d'isoler un candidat 
 
 1. **Correction des Contigs RFdiffusion pour le Site Zinc :**
    * Remplacer le segment contigu `A1-4` par une déclaration segmentée intégrant des boucles d'espacement (ex. `A1-2,4-6,A3-4` ou contigs modulaires) pour respecter l'écart 3D de $10.64\text{ \AA}$ entre Cys2 et His3 et garantir **4/4 liaisons tétraédriques parfaites**.
-2. **Intégration de LigandMPNN dans le Module 2 :**
-   * Télécharger les poids légers `ligandmpnn_v_32_010_25.pt` (~150 Mo).
-   * Implémenter la détection automatique : si la cible contient des `HETATM` (ligand ou métal) $\rightarrow$ routage automatique vers LigandMPNN.
+2. **Intégration de LigandMPNN dans le Module 2 :**  
+   * **[COMPLÉTÉ]** Moteur de sélection automatique intégré (`model: "auto"`), poids `ligandmpnn_v_32_010_25.pt` installés, support Google Colab actif.
 3. **Automatisation de la Génération de Sessions Mol* :**
    * Produire des scripts d'état ou fichiers de session Mol* pour ouvrir en un clic les candidats avec les stick-representations du DFHBI-1T et du zinc déjà colorés et étiquetés.
 4. **Validation Expérimentale (Wet-Lab) :**

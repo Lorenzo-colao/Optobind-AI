@@ -24,6 +24,9 @@ openbabel-wheel
 biopython
 rdkit
 prody
+setuptools<70
+ml-collections
+dm-tree
 
 # ── Utilitaires debug / logging ───────────────────────────────────────────────
 icecream

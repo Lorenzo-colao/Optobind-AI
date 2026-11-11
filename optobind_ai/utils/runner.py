@@ -14,6 +14,16 @@ for attr in ("Mapping", "Iterable", "Sequence", "MutableMapping", "Callable"):
     if not hasattr(collections, attr) and hasattr(collections.abc, attr):
         setattr(collections, attr, getattr(collections.abc, attr))
 
+# Rétablir les alias numpy supprimés en numpy 1.24+ (np.int, np.float) pour OpenFold / LigandMPNN
+try:
+    import numpy as np
+    if not hasattr(np, "int"):
+        np.int = int
+    if not hasattr(np, "float"):
+        np.float = float
+except Exception:
+    pass
+
 # Rétablir les alias DGL (AvgPooling & MaxPooling déplacés dans dgl.nn)
 try:
     import dgl.nn
