@@ -160,13 +160,12 @@ def _build_contigs(cfg: dict[str, Any], backbone_len: tuple[int, int]) -> str:
     """
     Construit la chaîne ``contigs`` passée à RFdiffusion All-Atom.
 
-    Dans RFdiffusion All-Atom, les segments sont séparés par des virgules sans espace :
-    Ex : ``A1-1,70-100`` (conserver résidu A1 de la cible, halluciner 70-100 AA de novo).
+    Préserve la syntaxe native de RFdiffusion (virgules pour segments intra-chaîne,
+    slashes '/' et espaces pour ruptures de chaînes / binders).
     """
     base = cfg.get("contigs", None)
     if base:
-        # Remplacer les slashes ou espaces par des virgules pour respecter la syntaxe All-Atom
-        return base.replace("/", ",").replace(" ", ",")
+        return str(base).strip().strip("'\"")
     lo, hi = backbone_len
     return f"A1-1,{lo}-{hi}"
 
@@ -362,6 +361,8 @@ def _invoke_rfdiffusion(
             f"contigmap.contigs=['{contigs}']",
             "inference.deterministic=True",
         ]
+        if seed is not None:
+            cmd.append(f"inference.seed={seed + start_num}")
         if safe_weights:
             cmd.append(f"inference.ckpt_path={safe_weights}")
         if lig_code:

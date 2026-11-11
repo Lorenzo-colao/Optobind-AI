@@ -167,6 +167,7 @@ def smart_pre_filter_sequences(
     # Détection automatique de présence d'un ion métallique dans la cible
     has_metal = False
     tgt_p = Path(target_pdb) if target_pdb else None
+    target_cys_count = 0
     if tgt_p and tgt_p.is_file():
         metal_symbols = {"ZN", "FE", "CU", "MG", "MN", "NI", "CO", "CD"}
         std_aas = {
@@ -174,16 +175,21 @@ def smart_pre_filter_sequences(
             "MET", "ASN", "PRO", "GLN", "ARG", "SER", "THR", "VAL", "TRP", "TYR"
         }
         try:
+            seen_cys_res = set()
             with tgt_p.open("r", encoding="utf-8", errors="ignore") as fh:
                 for line in fh:
                     if line.startswith(("ATOM", "HETATM")):
                         rname = line[17:20].strip().upper()
-                        if rname not in std_aas:
+                        chain = line[21]
+                        r_seq = line[22:26].strip()
+                        if rname == "CYS":
+                            seen_cys_res.add((chain, r_seq))
+                        elif rname not in std_aas:
                             aname = line[12:16].strip().upper()
                             elem = line[76:78].strip().upper() if len(line) >= 78 else aname[:2]
                             if elem in metal_symbols or any(aname.startswith(m) for m in metal_symbols):
                                 has_metal = True
-                                break
+            target_cys_count = len(seen_cys_res)
         except Exception as exc:
             _log.debug("[PRE-FILTER] Erreur lecture métaux cible : %s", exc)
 
@@ -215,19 +221,31 @@ def smart_pre_filter_sequences(
             stats["liabilities"] += 1
             continue
 
-        # 2. Règle universelle des cystéines
+        # 2. Règle universelle et adaptative des cystéines
         if filter_cys:
             c_count = raw_seq.count("C")
-            if not has_metal:
+            if target_cys_count > 0:
+                # Si le motif cible contient des Cys de coordination (ex: zinc finger):
+                extra_cys = c_count - target_cys_count
+                if c_count < target_cys_count:
+                    rejected.append((seq, f"Cys={c_count} inférieure au motif cible ({target_cys_count} Cys requises)"))
+                    stats["cysteines"] += 1
+                    continue
+                elif extra_cys % 2 != 0:
+                    rejected.append((seq, f"Cys extra orpheline ({extra_cys} Cys supplémentaires non appariables)"))
+                    stats["cysteines"] += 1
+                    continue
+            elif not has_metal:
                 # Cible sans métal : toute Cys doit pouvoir s'apparier en pont disulfure
                 if c_count % 2 != 0:
                     rejected.append((seq, f"Cys impaire ({c_count}) sans ion métallique (orpheline garantie)"))
                     stats["cysteines"] += 1
                     continue
             else:
-                # Cible métallique : la sphère de coordination admet 2 à 4 Cys
-                if c_count < 2 or c_count > 4:
-                    rejected.append((seq, f"Cys={c_count} incompatible avec coordination métallique [2-4]"))
+                # Cible métallique sans Cys dans le motif (ex: Mg2+, Ca2+, ou site Zn His3/His4/Asp):
+                # Les Cys de novo éventuelles doivent impérativement être en nombre pair pour faire des disulfures.
+                if c_count % 2 != 0:
+                    rejected.append((seq, f"Cys impaire ({c_count}) sur cible métallique sans Cys de coordination"))
                     stats["cysteines"] += 1
                     continue
 
@@ -599,15 +617,25 @@ def analyze_interface_interactions(
 
         model = structure[0]
         chains = list(model.get_chains())
-        if len(chains) <= 1:
+        std_aas = {
+            "ALA", "CYS", "ASP", "GLU", "PHE", "GLY", "HIS", "ILE", "LYS", "LEU",
+            "MET", "ASN", "PRO", "GLN", "ARG", "SER", "THR", "VAL", "TRP", "TYR"
+        }
+
+        if len(chains) > 1:
+            # Plusieurs chaînes : Chaîne 0 = binder ; autres chaînes = cible / ligand
+            prot_chain = chains[0]
+            other_chains = chains[1:]
+            prot_atoms = list(prot_chain.get_atoms())
+            other_atoms = [a for ch in other_chains for a in ch.get_atoms()]
+        else:
+            # Chaîne unique (monomère / biocapteur monobloc) :
+            # Séparer atomes protéiques des atomes non-standards / ligands / HETATMs
+            prot_atoms = [a for a in model.get_atoms() if a.parent.resname.upper() in std_aas]
+            other_atoms = [a for a in model.get_atoms() if a.parent.resname.upper() not in std_aas]
+
+        if not prot_atoms or not other_atoms:
             return default_result
-
-        # Chaîne A = binder / chaîne principale ; autres chaînes = cible, ligand, cofacteur
-        prot_chain = chains[0]
-        other_chains = chains[1:]
-
-        prot_atoms = list(prot_chain.get_atoms())
-        other_atoms = [a for ch in other_chains for a in ch.get_atoms()]
 
         # 1. Liaisons hydrogène à l'interface (Donneurs/Accepteurs N, O, S)
         prot_polar = [a for a in prot_atoms if a.element in {"N", "O", "S"}]

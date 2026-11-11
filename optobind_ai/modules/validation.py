@@ -200,24 +200,30 @@ def _predict_and_validate(
         logger         = logger,
     ) if predicted_pdb else 0
 
-    # pLDDT sur la poche de liaison (résidus 30–50, région aromatique)
-    pocket_slice = plddt_scores[30:51] if len(plddt_scores) > 50 else plddt_scores
-    plddt_pocket = sum(pocket_slice) / len(pocket_slice) if pocket_slice else 0.0
-
     from optobind_ai.utils.config import DEFAULT_CONFIG
-    rmsd_thresh  = DEFAULT_CONFIG["validation"]["rmsd_threshold"]
-    motif_thresh = DEFAULT_CONFIG["validation"].get("motif_rmsd_threshold", 1.5)
-    plddt_thresh = DEFAULT_CONFIG["validation"]["plddt_threshold"]
-    max_cys      = DEFAULT_CONFIG["validation"].get("max_unpaired_cys", 0)
-    max_hydro    = DEFAULT_CONFIG["validation"].get("max_hydrophobic_sasa_pct", 35.0)
-    max_coil     = DEFAULT_CONFIG["validation"].get("max_coil_pct", 45.0)
-    max_rama     = DEFAULT_CONFIG["validation"].get("max_ramachandran_outliers_pct", 2.0)
-    min_hbd      = DEFAULT_CONFIG["validation"].get("min_hbond_density", 0.15)
-    max_liab     = DEFAULT_CONFIG["validation"].get("max_liabilities", 0)
+    rmsd_thresh  = cfg.get("rmsd_threshold", DEFAULT_CONFIG["validation"]["rmsd_threshold"])
+    motif_thresh = cfg.get("motif_rmsd_threshold", DEFAULT_CONFIG["validation"].get("motif_rmsd_threshold", 1.5))
+    plddt_thresh = cfg.get("plddt_threshold", DEFAULT_CONFIG["validation"]["plddt_threshold"])
+    max_cys      = cfg.get("max_unpaired_cys", DEFAULT_CONFIG["validation"].get("max_unpaired_cys", 0))
+    max_hydro    = cfg.get("max_hydrophobic_sasa_pct", DEFAULT_CONFIG["validation"].get("max_hydrophobic_sasa_pct", 35.0))
+    max_coil     = cfg.get("max_coil_pct", DEFAULT_CONFIG["validation"].get("max_coil_pct", 45.0))
+    max_rama     = cfg.get("max_ramachandran_outliers_pct", DEFAULT_CONFIG["validation"].get("max_ramachandran_outliers_pct", 2.0))
+    min_hbd      = cfg.get("min_hbond_density", DEFAULT_CONFIG["validation"].get("min_hbond_density", 0.15))
+    max_liab     = cfg.get("max_liabilities", DEFAULT_CONFIG["validation"].get("max_liabilities", 0))
 
     from optobind_ai.modules.sequencing import motif_positions_from_contigs
-    contigs = DEFAULT_CONFIG["rfdiffusion"].get("contigs", "")
+    contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
     motif_positions = motif_positions_from_contigs(contigs, seq.scaffold.n_residues, logger)
+
+    # pLDDT sur la poche de liaison (orienté motif si défini, sinon région cœur)
+    if motif_positions and plddt_scores:
+        m_scores = [plddt_scores[p - 1] for p in motif_positions if 0 <= p - 1 < len(plddt_scores)]
+        plddt_pocket = sum(m_scores) / len(m_scores) if m_scores else (sum(plddt_scores) / len(plddt_scores))
+    elif len(plddt_scores) > 50:
+        pocket_slice = plddt_scores[30:51]
+        plddt_pocket = sum(pocket_slice) / len(pocket_slice) if pocket_slice else 0.0
+    else:
+        plddt_pocket = sum(plddt_scores) / len(plddt_scores) if plddt_scores else 0.0
     if predicted_pdb and motif_positions:
         motif_rmsd = _compute_rmsd(
             reference_pdb   = seq.scaffold.pdb_path,
@@ -319,9 +325,6 @@ def _evaluate_single_prediction(
         logger     = logger,
     ) if pred_pdb else 0
 
-    pocket_slice = plddt_scores[30:51] if len(plddt_scores) > 50 else plddt_scores
-    plddt_pocket = sum(pocket_slice) / len(pocket_slice) if pocket_slice else 0.0
-
     from optobind_ai.utils.config import DEFAULT_CONFIG
     rmsd_thresh  = cfg.get("rmsd_threshold", DEFAULT_CONFIG["validation"]["rmsd_threshold"])
     motif_thresh = cfg.get("motif_rmsd_threshold", DEFAULT_CONFIG["validation"].get("motif_rmsd_threshold", 1.5))
@@ -336,6 +339,16 @@ def _evaluate_single_prediction(
     from optobind_ai.modules.sequencing import motif_positions_from_contigs
     contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
     motif_positions = motif_positions_from_contigs(contigs, seq.scaffold.n_residues, logger)
+
+    # pLDDT sur la poche de liaison (orienté motif si défini, sinon région cœur)
+    if motif_positions and plddt_scores:
+        m_scores = [plddt_scores[p - 1] for p in motif_positions if 0 <= p - 1 < len(plddt_scores)]
+        plddt_pocket = sum(m_scores) / len(m_scores) if m_scores else (sum(plddt_scores) / len(plddt_scores))
+    elif len(plddt_scores) > 50:
+        pocket_slice = plddt_scores[30:51]
+        plddt_pocket = sum(pocket_slice) / len(pocket_slice) if pocket_slice else 0.0
+    else:
+        plddt_pocket = sum(plddt_scores) / len(plddt_scores) if plddt_scores else 0.0
     if pred_pdb and motif_positions:
         motif_rmsd = _compute_rmsd(
             reference_pdb   = seq.scaffold.pdb_path,
@@ -524,6 +537,12 @@ for i, t in enumerate(task_list, 1):
                     pae_tensor = cands.pae.detach().cpu().numpy()
                     pae_mat = pae_tensor[0] if pae_tensor.ndim == 3 else pae_tensor
                     _np.save(out_p / "pae.npy", pae_mat.astype(_np.float32))
+            except Exception:
+                pass
+            try:
+                del cands
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             except Exception:
                 pass
             elapsed = time.time() - t0
@@ -754,6 +773,8 @@ for attempt in range(1, max_retries + 1):
         if cand_dir and Path(cand_dir).exists():
             env["CHAI_DOWNLOADS_DIR"] = str(cand_dir)
             break
+
+    cmd = [python_env_path, "-u", "-c", runner_py]
 
     # Si la prédiction existe déjà (générée par _run_chai1_batch), on évite de réexécuter
     cif_file = _find_prediction_file(out_dir, ["*.cif"])
@@ -997,6 +1018,9 @@ def _count_clashes(
         radii = []
         residues = []
         chains = []
+        atom_names = []
+        res_names = []
+        elements = []
 
         with pdb_path.open("r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -1009,11 +1033,16 @@ def _count_clashes(
                         elem = "".join(c for c in elem if c.isalpha())
                         ch = line[21]
                         r_seq = line[22:26].strip()
+                        aname = line[12:16].strip().upper()
+                        rname = line[17:20].strip().upper()
 
                         coords.append([x, y, z])
                         radii.append(VDW_RADII.get(elem, DEFAULT_RADIUS))
                         chains.append(ch)
                         residues.append(r_seq)
+                        atom_names.append(aname)
+                        res_names.append(rname)
+                        elements.append(elem)
                     except (ValueError, IndexError):
                         pass
 
@@ -1023,6 +1052,7 @@ def _count_clashes(
         coords_arr = np.array(coords, dtype=np.float32)
         radii_arr  = np.array(radii, dtype=np.float32)
 
+        metals = {"ZN", "FE", "CU", "MG", "MN", "NI", "CO", "CD", "CA"}
         n = len(coords_arr)
         clash_count = 0
         for i in range(n):
@@ -1044,6 +1074,22 @@ def _count_clashes(
                 except ValueError:
                     if ch_i == ch_j and res_i == res_j:
                         continue
+
+                d = float(dists[idx])
+                # Exclure les ponts disulfures légitimes (CYS SG - CYS SG entre 1.8 et 2.5 Å)
+                if (atom_names[i] == "SG" and atom_names[j] == "SG"
+                        and res_names[i] == "CYS" and res_names[j] == "CYS"
+                        and 1.8 <= d <= 2.5):
+                    continue
+
+                # Exclure la coordination métallique légitime (métal - S/N/O entre 1.7 et 2.6 Å)
+                elem_i = elements[i]
+                elem_j = elements[j]
+                if (elem_i in metals or elem_j in metals) and 1.7 <= d <= 2.6:
+                    coord_elem = elem_j if elem_i in metals else elem_i
+                    if coord_elem in {"S", "N", "O"}:
+                        continue
+
                 clash_count += 1
 
         return clash_count
@@ -1351,9 +1397,9 @@ def _write_chai_restraints(restraints_path: Path, target_pdb: Path) -> bool:
 
 
 def _find_prediction_file(directory: Path, patterns: list[str]) -> Path | None:
-    """Cherche le premier fichier correspondant à l'un des patterns glob."""
+    """Cherche le premier fichier correspondant à l'un des patterns glob (tri déterministe)."""
     for pattern in patterns:
-        matches = list(directory.glob(pattern))
+        matches = sorted(directory.glob(pattern))
         if matches:
             return matches[0]
     return None
