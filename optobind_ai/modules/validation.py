@@ -236,10 +236,11 @@ def _predict_and_validate(
 
     ptm, iptm = _parse_chai_tm_scores(output_dir / seq.name, logger)
     pae_mean, pae_inter = _parse_chai_pae(output_dir / seq.name, len(seq.sequence), logger)
-    sasa, delta_sasa, hydro_pct = _compute_sasa(predicted_pdb, logger)
-    cys_info = analyze_cysteines(predicted_pdb, logger=logger)
-    inter_info = analyze_interface_interactions(predicted_pdb, logger=logger)
-    ss_info = analyze_secondary_structure_and_ramachandran(predicted_pdb, logger=logger)
+    struct = _load_structure(predicted_pdb)
+    sasa, delta_sasa, hydro_pct = _compute_sasa(predicted_pdb, logger, structure=struct)
+    cys_info = analyze_cysteines(predicted_pdb, logger=logger, structure=struct)
+    inter_info = analyze_interface_interactions(predicted_pdb, logger=logger, structure=struct)
+    ss_info = analyze_secondary_structure_and_ramachandran(predicted_pdb, logger=logger, structure=struct)
     liab_info = analyze_sequence_liabilities(seq.sequence)
     hbond_density = round(100.0 * inter_info["n_hbonds"] / delta_sasa, 2) if delta_sasa > 0 else 0.0
 
@@ -361,10 +362,11 @@ def _evaluate_single_prediction(
 
     ptm, iptm = _parse_chai_tm_scores(out_dir, logger)
     pae_mean, pae_inter = _parse_chai_pae(out_dir, len(seq.sequence), logger)
-    sasa, delta_sasa, hydro_pct = _compute_sasa(pred_pdb, logger)
-    cys_info = analyze_cysteines(pred_pdb, logger=logger)
-    inter_info = analyze_interface_interactions(pred_pdb, logger=logger)
-    ss_info = analyze_secondary_structure_and_ramachandran(pred_pdb, logger=logger)
+    struct = _load_structure(pred_pdb)
+    sasa, delta_sasa, hydro_pct = _compute_sasa(pred_pdb, logger, structure=struct)
+    cys_info = analyze_cysteines(pred_pdb, logger=logger, structure=struct)
+    inter_info = analyze_interface_interactions(pred_pdb, logger=logger, structure=struct)
+    ss_info = analyze_secondary_structure_and_ramachandran(pred_pdb, logger=logger, structure=struct)
     liab_info = analyze_sequence_liabilities(seq.sequence)
     hbond_density = round(100.0 * inter_info["n_hbonds"] / delta_sasa, 2) if delta_sasa > 0 else 0.0
 
@@ -482,6 +484,11 @@ try:
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
     # Sur A100 (40/80 Go) ou G4 (96 Go), désactiver low_memory pour garder toutes les activations
     # en mémoire HBM2e ultra-rapide (2000 Go/s) au lieu de streamer via le bus CPU lent !
     is_high_vram = False
@@ -706,6 +713,15 @@ except Exception:
 
 try:
     import torch
+    # Activer TensorFloat-32 et semi-précision pour une inférence VRAM ultra-rapide
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
     is_high_vram = False
     if torch.cuda.is_available():
         if torch.cuda.get_device_properties(0).total_memory / (1024**3) >= 30:
@@ -993,13 +1009,29 @@ def _compute_rmsd(
         return float("inf")
 
 
+def _load_structure(pdb_path: Path | str | None) -> Any:
+    """Charge et retourne l'objet Structure Biopython d'un fichier PDB/CIF en mémoire unique."""
+    if pdb_path is None:
+        return None
+    p = Path(pdb_path)
+    if not p.is_file():
+        return None
+    try:
+        from Bio.PDB import PDBParser, MMCIFParser
+        is_cif = p.suffix.lower() in [".cif", ".mmcif"]
+        parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
+        return parser.get_structure("complex", str(p))
+    except Exception:
+        return None
+
+
 def _count_clashes(
     pdb_path   : Path | None,
     vdw_cutoff : float,
     logger     : logging.Logger,
 ) -> int:
     """
-    Détecte les clashes stériques entre atomes non liés.
+    Détecte les clashes stériques entre atomes non liés via cKDTree O(N log N).
     Tolérant aux formats de colonnes PDB non standards (ligands, ions).
     """
     if pdb_path is None or not pdb_path.exists():
@@ -1053,21 +1085,18 @@ def _count_clashes(
         radii_arr  = np.array(radii, dtype=np.float32)
 
         metals = {"ZN", "FE", "CU", "MG", "MN", "NI", "CO", "CD", "CA"}
-        n = len(coords_arr)
         clash_count = 0
-        for i in range(n):
-            ch_i = chains[i]
-            res_i = residues[i]
-            dists = np.linalg.norm(coords_arr[i+1:] - coords_arr[i], axis=1)
-            thresholds = vdw_cutoff * (radii_arr[i] + radii_arr[i+1:])
 
-            # Ne tester que les atomes qui violent le seuil de Van der Waals
-            clash_indices = np.where(dists < thresholds)[0]
-            for idx in clash_indices:
-                j = i + 1 + idx
-                ch_j = chains[j]
-                res_j = residues[j]
-                # Exclure les liaisons chimiques intra-résidu ou le pont peptidique adjacent (|i - j| <= 1)
+        # Optimisation haute performance O(N log N) via SciPy cKDTree
+        try:
+            from scipy.spatial import cKDTree
+            tree = cKDTree(coords_arr)
+            max_search_r = float(vdw_cutoff * 2.0 * float(np.max(radii_arr)))
+            candidate_pairs = tree.query_pairs(r=max_search_r, output_type="ndarray")
+
+            for i, j in candidate_pairs:
+                ch_i, ch_j = chains[i], chains[j]
+                res_i, res_j = residues[i], residues[j]
                 try:
                     if ch_i == ch_j and abs(int(res_i) - int(res_j)) <= 1:
                         continue
@@ -1075,7 +1104,11 @@ def _count_clashes(
                     if ch_i == ch_j and res_i == res_j:
                         continue
 
-                d = float(dists[idx])
+                d = float(np.linalg.norm(coords_arr[i] - coords_arr[j]))
+                thresh = float(vdw_cutoff * (radii_arr[i] + radii_arr[j]))
+                if d >= thresh:
+                    continue
+
                 # Exclure les ponts disulfures légitimes (CYS SG - CYS SG entre 1.8 et 2.5 Å)
                 if (atom_names[i] == "SG" and atom_names[j] == "SG"
                         and res_names[i] == "CYS" and res_names[j] == "CYS"
@@ -1083,8 +1116,7 @@ def _count_clashes(
                     continue
 
                 # Exclure la coordination métallique légitime (métal - S/N/O entre 1.7 et 2.6 Å)
-                elem_i = elements[i]
-                elem_j = elements[j]
+                elem_i, elem_j = elements[i], elements[j]
                 if (elem_i in metals or elem_j in metals) and 1.7 <= d <= 2.6:
                     coord_elem = elem_j if elem_i in metals else elem_i
                     if coord_elem in {"S", "N", "O"}:
@@ -1092,7 +1124,43 @@ def _count_clashes(
 
                 clash_count += 1
 
-        return clash_count
+            return clash_count
+
+        except Exception:
+            # Fallback boucle vectorisée si cKDTree échoue
+            n = len(coords_arr)
+            for i in range(n):
+                ch_i = chains[i]
+                res_i = residues[i]
+                dists = np.linalg.norm(coords_arr[i+1:] - coords_arr[i], axis=1)
+                thresholds = vdw_cutoff * (radii_arr[i] + radii_arr[i+1:])
+                clash_indices = np.where(dists < thresholds)[0]
+                for idx in clash_indices:
+                    j = i + 1 + idx
+                    ch_j = chains[j]
+                    res_j = residues[j]
+                    try:
+                        if ch_i == ch_j and abs(int(res_i) - int(res_j)) <= 1:
+                            continue
+                    except ValueError:
+                        if ch_i == ch_j and res_i == res_j:
+                            continue
+
+                    d = float(dists[idx])
+                    if (atom_names[i] == "SG" and atom_names[j] == "SG"
+                            and res_names[i] == "CYS" and res_names[j] == "CYS"
+                            and 1.8 <= d <= 2.5):
+                        continue
+
+                    elem_i, elem_j = elements[i], elements[j]
+                    if (elem_i in metals or elem_j in metals) and 1.7 <= d <= 2.6:
+                        coord_elem = elem_j if elem_i in metals else elem_i
+                        if coord_elem in {"S", "N", "O"}:
+                            continue
+
+                    clash_count += 1
+
+            return clash_count
 
     except Exception as exc:
         logger.warning("[CLASH] Erreur de calcul : %s", exc)
@@ -1100,8 +1168,9 @@ def _count_clashes(
 
 
 def _compute_sasa(
-    pdb_path: Path | None,
+    pdb_path: Path | None = None,
     logger: logging.Logger | None = None,
+    structure: Any = None,
 ) -> tuple[float, float, float]:
     """
     Calcule :
@@ -1114,25 +1183,34 @@ def _compute_sasa(
     tuple[float, float, float]
         (sasa_totale_Å², delta_sasa_interface_Å², hydrophobic_sasa_pct)
     """
-    if pdb_path is None or not pdb_path.exists():
+    if structure is None:
+        if pdb_path is None or not pdb_path.exists():
+            return 0.0, 0.0, 0.0
+
+        try:
+            from Bio.PDB import PDBParser, MMCIFParser
+            if pdb_path.suffix.lower() in (".cif", ".mmcif"):
+                parser = MMCIFParser(QUIET=True)
+            else:
+                parser = PDBParser(QUIET=True)
+            structure = parser.get_structure("complex", str(pdb_path))
+        except Exception as exc:
+            if logger:
+                logger.debug("[SASA] Erreur parsing structure : %s", exc)
+            return 0.0, 0.0, 0.0
+
+    if structure is None or len(structure) == 0:
         return 0.0, 0.0, 0.0
 
     try:
-        from Bio.PDB import PDBParser, MMCIFParser, ShrakeRupley, Structure, Model
+        from Bio.PDB import ShrakeRupley, Structure, Model
 
-        if pdb_path.suffix.lower() in (".cif", ".mmcif"):
-            parser = MMCIFParser(QUIET=True)
-        else:
-            parser = PDBParser(QUIET=True)
-
-        struct = parser.get_structure("complex", str(pdb_path))
-        if len(struct) == 0:
-            return 0.0, 0.0, 0.0
-
-        model = struct[0]
+        model = structure[0]
+        has_sasa = any(hasattr(r, "sasa") for r in structure.get_residues())
         sr = ShrakeRupley()
-        sr.compute(struct, level="R")
-        total_sasa = round(float(sum(r.sasa for r in struct.get_residues() if hasattr(r, "sasa"))), 1)
+        if not has_sasa:
+            sr.compute(structure, level="R")
+        total_sasa = round(float(sum(r.sasa for r in structure.get_residues() if hasattr(r, "sasa"))), 1)
 
         # Calcul du % hydrophobe sur la fraction protéique
         std_aa = {
@@ -1140,8 +1218,8 @@ def _compute_sasa(
             "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
         }
         hydro_aa = {"VAL", "LEU", "ILE", "PHE", "TRP", "MET"}
-        prot_sasa = sum(r.sasa for r in struct.get_residues() if r.resname.upper() in std_aa and hasattr(r, "sasa"))
-        hydro_sasa = sum(r.sasa for r in struct.get_residues() if r.resname.upper() in hydro_aa and hasattr(r, "sasa"))
+        prot_sasa = sum(r.sasa for r in structure.get_residues() if r.resname.upper() in std_aa and hasattr(r, "sasa"))
+        hydro_sasa = sum(r.sasa for r in structure.get_residues() if r.resname.upper() in hydro_aa and hasattr(r, "sasa"))
         hydro_pct = round(float(hydro_sasa / prot_sasa * 100.0), 1) if prot_sasa > 0 else 0.0
 
         chains = list(model.get_chains())

@@ -426,10 +426,11 @@ def annotate_top_candidates_solubility(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def analyze_cysteines(
-    pdb_path: Path | str | None,
+    pdb_path: Path | str | None = None,
     metal_cutoff: float = 3.2,
     disulfide_cutoff: float = 3.0,
     logger: logging.Logger | None = None,
+    structure: Any = None,
 ) -> dict[str, Any]:
     """
     Analyse les résidus CYS dans la structure 3D pour détecter les cystéines orphelines.
@@ -445,10 +446,11 @@ def analyze_cysteines(
 
     Parameters
     ----------
-    pdb_path         : Chemin vers le fichier PDB ou mmCIF.
+    pdb_path         : Chemin vers le fichier PDB ou mmCIF (optionnel si structure fournie).
     metal_cutoff     : Distance max SG - métal pour la coordination (Å, défaut 3.2).
     disulfide_cutoff : Distance max SG - SG pour un pont disulfure (Å, défaut 3.0).
     logger           : Logger partagé.
+    structure        : Objet Bio.PDB.Structure pré-chargé en mémoire (optimisation I/O).
 
     Returns
     -------
@@ -464,27 +466,33 @@ def analyze_cysteines(
         "details": "-",
     }
 
-    if not pdb_path:
-        return default_result
+    if structure is None:
+        if not pdb_path:
+            return default_result
+        path = Path(pdb_path)
+        if not path.is_file():
+            return default_result
+        try:
+            from Bio.PDB import PDBParser, MMCIFParser
+            is_cif = path.suffix.lower() in [".cif", ".mmcif"]
+            parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
+            structure = parser.get_structure("pred_struct", str(path))
+        except Exception:
+            return default_result
 
-    path = Path(pdb_path)
-    if not path.is_file():
+    if structure is None or len(structure) == 0:
         return default_result
 
     try:
-        from Bio.PDB import PDBParser, MMCIFParser
-        from Bio.PDB.SASA import ShrakeRupley
-
-        is_cif = path.suffix.lower() in [".cif", ".mmcif"]
-        parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
-        structure = parser.get_structure("pred_struct", str(path))
-
-        # Calcul SASA au niveau résidu
-        try:
-            sr = ShrakeRupley()
-            sr.compute(structure, level="R")
-        except Exception:
-            pass
+        # Calcul SASA au niveau résidu uniquement si pas encore calculé
+        has_sasa = any(hasattr(r, "sasa") for r in structure.get_residues())
+        if not has_sasa:
+            try:
+                from Bio.PDB.SASA import ShrakeRupley
+                sr = ShrakeRupley()
+                sr.compute(structure, level="R")
+            except Exception:
+                pass
 
         # 1. Extraction des atomes métalliques (hors acides aminés standards)
         std_aa = {
@@ -565,10 +573,11 @@ def analyze_cysteines(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def analyze_interface_interactions(
-    pdb_path: Path | str | None,
+    pdb_path: Path | str | None = None,
     hbond_cutoff: float = 3.5,
     salt_bridge_cutoff: float = 4.0,
     logger: logging.Logger | None = None,
+    structure: Any = None,
 ) -> dict[str, Any]:
     """
     Détecte et quantifie les liaisons hydrogène (H-bonds) et les ponts salins (salt bridges)
@@ -581,10 +590,11 @@ def analyze_interface_interactions(
 
     Parameters
     ----------
-    pdb_path           : Chemin du fichier PDB/CIF du complexe.
+    pdb_path           : Chemin du fichier PDB/CIF du complexe (optionnel si structure fournie).
     hbond_cutoff       : Distance maximale pour liaison H (Å, défaut 3.5).
     salt_bridge_cutoff : Distance maximale pour pont salin (Å, défaut 4.0).
     logger             : Logger partagé.
+    structure          : Objet Bio.PDB.Structure pré-chargé en mémoire (optimisation I/O).
 
     Returns
     -------
@@ -598,22 +608,25 @@ def analyze_interface_interactions(
         "salt_bridges_details": [],
     }
 
-    if not pdb_path:
-        return default_result
+    if structure is None:
+        if not pdb_path:
+            return default_result
+        path = Path(pdb_path)
+        if not path.is_file():
+            return default_result
+        try:
+            from Bio.PDB import PDBParser, MMCIFParser
+            is_cif = path.suffix.lower() in [".cif", ".mmcif"]
+            parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
+            structure = parser.get_structure("complex", str(path))
+        except Exception:
+            return default_result
 
-    path = Path(pdb_path)
-    if not path.is_file():
+    if structure is None or len(structure) == 0:
         return default_result
 
     try:
-        from Bio.PDB import PDBParser, MMCIFParser
         import numpy as np
-
-        is_cif = path.suffix.lower() in [".cif", ".mmcif"]
-        parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
-        structure = parser.get_structure("complex", str(path))
-        if len(structure) == 0:
-            return default_result
 
         model = structure[0]
         chains = list(model.get_chains())
@@ -687,8 +700,9 @@ def analyze_interface_interactions(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def analyze_secondary_structure_and_ramachandran(
-    pdb_path: Path | str | None,
+    pdb_path: Path | str | None = None,
     logger: logging.Logger | None = None,
+    structure: Any = None,
 ) -> dict[str, Any]:
     """
     Analyse les angles dièdres du squelette (φ, ψ) de la protéine de novo pour :
@@ -697,6 +711,12 @@ def analyze_secondary_structure_and_ramachandran(
       2. Détecter les résidus en régions énergétiquement interdites (Ramachandran Outliers).
 
     Fonctionne en pur Python/NumPy sans aucune dépendance externe (mkdssp / C++ non requis).
+
+    Parameters
+    ----------
+    pdb_path  : Chemin du fichier PDB/CIF (optionnel si structure fournie).
+    logger    : Logger partagé.
+    structure : Objet Bio.PDB.Structure pré-chargé en mémoire (optimisation I/O).
 
     Returns
     -------
@@ -718,19 +738,25 @@ def analyze_secondary_structure_and_ramachandran(
         "ramachandran_details": "-",
     }
 
-    if not pdb_path:
-        return default_result
+    if structure is None:
+        if not pdb_path:
+            return default_result
+        path = Path(pdb_path)
+        if not path.is_file():
+            return default_result
+        try:
+            from Bio.PDB import PDBParser, MMCIFParser
+            is_cif = path.suffix.lower() in [".cif", ".mmcif"]
+            parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
+            structure = parser.get_structure("struct_dssp", str(path))
+        except Exception:
+            return default_result
 
-    path = Path(pdb_path)
-    if not path.is_file():
+    if structure is None or len(structure) == 0:
         return default_result
 
     try:
-        from Bio.PDB import PDBParser, MMCIFParser, Polypeptide
-
-        is_cif = path.suffix.lower() in [".cif", ".mmcif"]
-        parser = MMCIFParser(QUIET=True) if is_cif else PDBParser(QUIET=True)
-        structure = parser.get_structure("struct_dssp", str(path))
+        from Bio.PDB import Polypeptide
 
         ppb = Polypeptide.PPBuilder()
         peptides = ppb.build_peptides(structure)
