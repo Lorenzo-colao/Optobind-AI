@@ -365,6 +365,12 @@ def _invoke_rfdiffusion(
     env["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "1"
     env["NVIDIA_TF32_OVERRIDE"] = "1"
     env["RFDIFFUSION_SKIP_TRAJ"] = "1"
+    # Garantir que libdgl.so trouve libcudart/libcusparse/libcublas depuis PyTorch cu118 sous Colab CUDA 12
+    py_env_root = Path(sys.executable).resolve().parent.parent
+    nv_lib_dirs = sorted(py_env_root.glob("lib/python*/site-packages/nvidia/*/lib"))
+    if nv_lib_dirs:
+        cur_ld = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = ":".join([str(p) for p in nv_lib_dirs] + ([cur_ld] if cur_ld else []))
     rf2aa_dir = rfdiff_root / "lib" / "rf2aa"
     current_pp = env.get("PYTHONPATH", "")
     paths = [str(rfdiff_root), str(rf2aa_dir)]

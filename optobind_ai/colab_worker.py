@@ -196,6 +196,14 @@ class WorkerState:
 
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
+            # Exposer automatiquement les bibliothèques CUDA 11.8 packagées avec PyTorch (+cu118) pour libdgl.so
+            py_root = Path(self.python_bin).resolve().parent.parent
+            nv_libs = sorted(py_root.glob("lib/python*/site-packages/nvidia/*/lib"))
+            if nv_libs:
+                existing_ld = env.get("LD_LIBRARY_PATH", "")
+                ld_parts = [str(p) for p in nv_libs] + ([existing_ld] if existing_ld else [])
+                env["LD_LIBRARY_PATH"] = ":".join(ld_parts)
+
             drive_chai = Path("/content/drive/MyDrive/optobind_weights_cache/chai")
             if drive_chai.exists() and "CHAI_DOWNLOADS_DIR" not in env:
                 env["CHAI_DOWNLOADS_DIR"] = str(drive_chai)
