@@ -213,11 +213,18 @@ def _predict_and_validate(
 
     from optobind_ai.modules.sequencing import motif_positions_from_contigs
     contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
-    motif_positions = motif_positions_from_contigs(contigs, seq.scaffold.n_residues, logger)
+    motif_positions = motif_positions_from_contigs(
+        contigs,
+        seq.scaffold.n_residues,
+        logger,
+        scaffold_pdb=seq.scaffold.pdb_path,
+        target_pdb=target_pdb,
+    )
 
-    # pLDDT sur la poche de liaison (orienté motif si défini, sinon région cœur)
-    if motif_positions and plddt_scores:
-        m_scores = [plddt_scores[p - 1] for p in motif_positions if 0 <= p - 1 < len(plddt_scores)]
+    # pLDDT sur la poche de liaison (voisinage 3D 6.0 Å ligand/métal + résidus motif)
+    pocket_indices = _find_3d_pocket_residue_indices(predicted_pdb, motif_positions)
+    if pocket_indices and plddt_scores:
+        m_scores = [plddt_scores[p - 1] for p in pocket_indices if 0 <= p - 1 < len(plddt_scores)]
         plddt_pocket = sum(m_scores) / len(m_scores) if m_scores else (sum(plddt_scores) / len(plddt_scores))
     elif len(plddt_scores) > 50:
         pocket_slice = plddt_scores[30:51]
@@ -237,9 +244,10 @@ def _predict_and_validate(
     ptm, iptm = _parse_chai_tm_scores(output_dir / seq.name, logger)
     pae_mean, pae_inter = _parse_chai_pae(output_dir / seq.name, len(seq.sequence), logger)
     struct = _load_structure(predicted_pdb)
-    sasa, delta_sasa, hydro_pct = _compute_sasa(predicted_pdb, logger, structure=struct)
+    sasa, delta_sasa, hydro_pct, lig_burial = _compute_sasa_and_burial(predicted_pdb, logger, structure=struct)
     cys_info = analyze_cysteines(predicted_pdb, logger=logger, structure=struct)
     inter_info = analyze_interface_interactions(predicted_pdb, logger=logger, structure=struct)
+    metal_info = analyze_metal_coordination(predicted_pdb, logger=logger)
     ss_info = analyze_secondary_structure_and_ramachandran(predicted_pdb, logger=logger, structure=struct)
     liab_info = analyze_sequence_liabilities(seq.sequence)
     hbond_density = round(100.0 * inter_info["n_hbonds"] / delta_sasa, 2) if delta_sasa > 0 else 0.0
@@ -262,6 +270,9 @@ def _predict_and_validate(
         n_interface_hbonds        = inter_info["n_hbonds"],
         n_interface_salt_bridges  = inter_info["n_salt_bridges"],
         hbond_density             = hbond_density,
+        ligand_burial_pct         = lig_burial,
+        n_metal_coord             = metal_info["coordination_number"],
+        metal_coord_details       = metal_info["coordination_details"],
         n_unpaired_cys            = cys_info["n_unpaired"],
         unpaired_details          = cys_info["details"],
         helix_pct                 = ss_info["helix_pct"],
@@ -339,11 +350,18 @@ def _evaluate_single_prediction(
 
     from optobind_ai.modules.sequencing import motif_positions_from_contigs
     contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
-    motif_positions = motif_positions_from_contigs(contigs, seq.scaffold.n_residues, logger)
+    motif_positions = motif_positions_from_contigs(
+        contigs,
+        seq.scaffold.n_residues,
+        logger,
+        scaffold_pdb=seq.scaffold.pdb_path,
+        target_pdb=target_pdb,
+    )
 
-    # pLDDT sur la poche de liaison (orienté motif si défini, sinon région cœur)
-    if motif_positions and plddt_scores:
-        m_scores = [plddt_scores[p - 1] for p in motif_positions if 0 <= p - 1 < len(plddt_scores)]
+    # pLDDT sur la poche de liaison (voisinage 3D 6.0 Å ligand/métal + résidus motif)
+    pocket_indices = _find_3d_pocket_residue_indices(pred_pdb, motif_positions)
+    if pocket_indices and plddt_scores:
+        m_scores = [plddt_scores[p - 1] for p in pocket_indices if 0 <= p - 1 < len(plddt_scores)]
         plddt_pocket = sum(m_scores) / len(m_scores) if m_scores else (sum(plddt_scores) / len(plddt_scores))
     elif len(plddt_scores) > 50:
         pocket_slice = plddt_scores[30:51]
@@ -363,9 +381,10 @@ def _evaluate_single_prediction(
     ptm, iptm = _parse_chai_tm_scores(out_dir, logger)
     pae_mean, pae_inter = _parse_chai_pae(out_dir, len(seq.sequence), logger)
     struct = _load_structure(pred_pdb)
-    sasa, delta_sasa, hydro_pct = _compute_sasa(pred_pdb, logger, structure=struct)
+    sasa, delta_sasa, hydro_pct, lig_burial = _compute_sasa_and_burial(pred_pdb, logger, structure=struct)
     cys_info = analyze_cysteines(pred_pdb, logger=logger, structure=struct)
     inter_info = analyze_interface_interactions(pred_pdb, logger=logger, structure=struct)
+    metal_info = analyze_metal_coordination(pred_pdb, logger=logger)
     ss_info = analyze_secondary_structure_and_ramachandran(pred_pdb, logger=logger, structure=struct)
     liab_info = analyze_sequence_liabilities(seq.sequence)
     hbond_density = round(100.0 * inter_info["n_hbonds"] / delta_sasa, 2) if delta_sasa > 0 else 0.0
@@ -388,6 +407,9 @@ def _evaluate_single_prediction(
         n_interface_hbonds        = inter_info["n_hbonds"],
         n_interface_salt_bridges  = inter_info["n_salt_bridges"],
         hbond_density             = hbond_density,
+        ligand_burial_pct         = lig_burial,
+        n_metal_coord             = metal_info["coordination_number"],
+        metal_coord_details       = metal_info["coordination_details"],
         n_unpaired_cys            = cys_info["n_unpaired"],
         unpaired_details          = cys_info["details"],
         helix_pct                 = ss_info["helix_pct"],
@@ -1167,25 +1189,91 @@ def _count_clashes(
         return 0
 
 
+def _find_3d_pocket_residue_indices(
+    pdb_path: Path | None,
+    motif_positions: list[int] | None = None,
+    cutoff: float = 6.0,
+) -> list[int]:
+    """
+    Identifie les indices 1-based des résidus protéiques formant la poche 3D réelle
+    (à moins de ``cutoff`` Å d'un atome ligand/métal), combinés aux résidus du motif.
+    """
+    base = set(motif_positions or [])
+    if pdb_path is None or not pdb_path.exists():
+        return sorted(base)
+
+    try:
+        import numpy as np
+        std_aa = {
+            "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+            "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+        }
+        prot_res_order: list[tuple[str, int]] = []
+        prot_res_set: set[tuple[str, int]] = set()
+        prot_atoms: list[tuple[int, list[float]]] = []
+        het_coords: list[list[float]] = []
+
+        with pdb_path.open("r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if not line.startswith(("ATOM  ", "HETATM")):
+                    continue
+                if len(line) < 54:
+                    continue
+                rname = line[17:20].strip().upper()
+                ch = line[21]
+                try:
+                    rseq = int(line[22:26].strip())
+                    xyz = [float(line[30:38]), float(line[38:46]), float(line[46:54])]
+                except ValueError:
+                    continue
+                if rname in std_aa:
+                    key = (ch, rseq)
+                    if key not in prot_res_set:
+                        prot_res_set.add(key)
+                        prot_res_order.append(key)
+                    idx_1 = prot_res_order.index(key) + 1
+                    prot_atoms.append((idx_1, xyz))
+                elif rname not in {"HOH", "WAT"}:
+                    het_coords.append(xyz)
+
+        if prot_atoms and het_coords:
+            from scipy.spatial import cKDTree
+            p_arr = np.array([x[1] for x in prot_atoms], dtype=np.float32)
+            h_arr = np.array(het_coords, dtype=np.float32)
+            hits = cKDTree(p_arr).query_ball_tree(cKDTree(h_arr), r=cutoff)
+            for a_i, h_list in enumerate(hits):
+                if h_list:
+                    base.add(prot_atoms[a_i][0])
+    except Exception:
+        pass
+    return sorted(base)
+
+
 def _compute_sasa(
     pdb_path: Path | None = None,
     logger: logging.Logger | None = None,
     structure: Any = None,
 ) -> tuple[float, float, float]:
-    """
-    Calcule :
-      1. La surface accessible au solvant (SASA) totale.
-      2. La surface enfouie à l'interface (ΔSASA) via l'algorithme de Shrake-Rupley.
-      3. Le pourcentage de surface occupée par les résidus hydrophobes stricts (V, L, I, F, W, M).
+    """Wrapper rétrocompatible retournant (sasa_totale, delta_sasa, hydrophobic_sasa_pct)."""
+    sasa, dsasa, hydro, _ = _compute_sasa_and_burial(pdb_path, logger, structure=structure)
+    return sasa, dsasa, hydro
 
-    Returns
-    -------
-    tuple[float, float, float]
-        (sasa_totale_Å², delta_sasa_interface_Å², hydrophobic_sasa_pct)
+
+def _compute_sasa_and_burial(
+    pdb_path: Path | None = None,
+    logger: logging.Logger | None = None,
+    structure: Any = None,
+) -> tuple[float, float, float, float]:
+    """
+    Calcule en passe unique :
+      1. SASA totale du complexe (Å²).
+      2. ΔSASA d'interface (Å²), y compris pour les monomères liés à un HETATM.
+      3. % de surface protéique hydrophobe (V, L, I, F, W, M).
+      4. % d'enfouissement du ligand dans la poche (ligand_burial_pct, 0–100%).
     """
     if structure is None:
         if pdb_path is None or not pdb_path.exists():
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0
 
         try:
             from Bio.PDB import PDBParser, MMCIFParser
@@ -1197,13 +1285,13 @@ def _compute_sasa(
         except Exception as exc:
             if logger:
                 logger.debug("[SASA] Erreur parsing structure : %s", exc)
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0
 
     if structure is None or len(structure) == 0:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
 
     try:
-        from Bio.PDB import ShrakeRupley, Structure, Model
+        from Bio.PDB import Chain, Model, ShrakeRupley, Structure
 
         model = structure[0]
         has_sasa = any(hasattr(r, "sasa") for r in structure.get_residues())
@@ -1212,21 +1300,56 @@ def _compute_sasa(
             sr.compute(structure, level="R")
         total_sasa = round(float(sum(r.sasa for r in structure.get_residues() if hasattr(r, "sasa"))), 1)
 
-        # Calcul du % hydrophobe sur la fraction protéique
         std_aa = {
             "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
             "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
         }
         hydro_aa = {"VAL", "LEU", "ILE", "PHE", "TRP", "MET"}
-        prot_sasa = sum(r.sasa for r in structure.get_residues() if r.resname.upper() in std_aa and hasattr(r, "sasa"))
-        hydro_sasa = sum(r.sasa for r in structure.get_residues() if r.resname.upper() in hydro_aa and hasattr(r, "sasa"))
+        prot_res = [r for r in model.get_residues() if r.resname.upper() in std_aa]
+        het_res = [r for r in model.get_residues() if r.resname.upper() not in std_aa and r.resname.upper() not in {"HOH", "WAT"}]
+
+        prot_sasa = sum(r.sasa for r in prot_res if hasattr(r, "sasa"))
+        hydro_sasa = sum(r.sasa for r in prot_res if r.resname.upper() in hydro_aa and hasattr(r, "sasa"))
         hydro_pct = round(float(hydro_sasa / prot_sasa * 100.0), 1) if prot_sasa > 0 else 0.0
+
+        # Calcul de l'enfouissement du ligand (SASA ligand lié vs ligand isolé)
+        ligand_burial_pct = 0.0
+        if het_res:
+            bound_lig_sasa = float(sum(r.sasa for r in het_res if hasattr(r, "sasa")))
+            s_lig = Structure.Structure("lig_iso")
+            m_lig = Model.Model(0)
+            c_lig = Chain.Chain("L")
+            s_lig.add(m_lig)
+            m_lig.add(c_lig)
+            for idx_r, hr in enumerate(het_res, 1):
+                rc = hr.copy()
+                rc.id = (hr.id[0], idx_r, " ")
+                c_lig.add(rc)
+            sr.compute(s_lig, level="R")
+            iso_lig_sasa = float(sum(r.sasa for r in s_lig.get_residues() if hasattr(r, "sasa")))
+            if iso_lig_sasa > 1e-3:
+                ligand_burial_pct = round(max(0.0, min(100.0, (1.0 - bound_lig_sasa / iso_lig_sasa) * 100.0)), 1)
 
         chains = list(model.get_chains())
         if len(chains) <= 1:
-            return total_sasa, 0.0, hydro_pct
+            if not het_res or not prot_res:
+                return total_sasa, 0.0, hydro_pct, ligand_burial_pct
+            # Monomère avec ligand(s) HETATM dans la même chaîne : séparer protéine et ligand
+            s_p = Structure.Structure("prot_iso")
+            m_p = Model.Model(0)
+            c_p = Chain.Chain("P")
+            s_p.add(m_p)
+            m_p.add(c_p)
+            for idx_r, pr in enumerate(prot_res, 1):
+                rc = pr.copy()
+                rc.id = (" ", idx_r, " ")
+                c_p.add(rc)
+            sr.compute(s_p, level="R")
+            iso_prot_sasa = float(sum(r.sasa for r in s_p.get_residues() if hasattr(r, "sasa")))
+            delta_sasa = max(0.0, round(float(iso_prot_sasa + iso_lig_sasa - total_sasa), 1))
+            return total_sasa, delta_sasa, hydro_pct, ligand_burial_pct
 
-        # Calcul des surfaces des chaînes isolées : ΔSASA = Σ SASA(chaîne) - SASA(complexe)
+        # Multi-chaînes : ΔSASA = Σ SASA(chaîne) - SASA(complexe)
         sum_isolated = 0.0
         for ch in chains:
             s_isolated = Structure.Structure(ch.id)
@@ -1237,16 +1360,16 @@ def _compute_sasa(
             sum_isolated += sum(r.sasa for r in s_isolated.get_residues() if hasattr(r, "sasa"))
 
         delta_sasa = max(0.0, round(float(sum_isolated - total_sasa), 1))
-        return total_sasa, delta_sasa, hydro_pct
+        return total_sasa, delta_sasa, hydro_pct, ligand_burial_pct
 
     except ImportError:
         if logger:
             logger.debug("[SASA] Biopython non disponible pour le calcul de SASA.")
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     except Exception as exc:
         if logger:
             logger.debug("[SASA] Erreur calcul SASA : %s", exc)
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1491,33 +1614,40 @@ def _dry_run_validation(
     seq        : DesignedSequence,
     output_dir : Path,
 ) -> ValidationResult:
-    """Génère des métriques fictives pour les tests sans GPU."""
+    """Génère des métriques et un PDB prédit réalistes pour les tests sans GPU."""
     import random
+    from optobind_ai.modules.scaffolding import _write_dummy_pdb
 
-    plddt_mean   = round(random.uniform(75.0, 98.0), 2)
-    plddt_pocket = round(random.uniform(70.0, 99.0), 2)
-    ptm          = round(random.uniform(0.70, 0.95), 3)
-    iptm         = round(random.uniform(0.60, 0.90), 3)
-    pae_mean     = round(random.uniform(2.5, 6.0), 2)
-    pae_inter    = round(random.uniform(3.0, 7.5), 2)
+    plddt_mean   = round(random.uniform(86.0, 97.5), 2)
+    plddt_pocket = round(random.uniform(88.0, 98.5), 2)
+    ptm          = round(random.uniform(0.78, 0.95), 3)
+    iptm         = round(random.uniform(0.72, 0.92), 3)
+    pae_mean     = round(random.uniform(2.2, 5.0), 2)
+    pae_inter    = round(random.uniform(2.8, 6.2), 2)
     sasa         = round(random.uniform(4500.0, 6500.0), 1)
-    delta_sasa   = round(random.uniform(500.0, 950.0), 1)
-    rmsd         = round(random.uniform(0.5, 3.5),   3)
-    motif_rmsd   = round(random.uniform(0.3, 1.8),   3)
-    n_clashes    = random.randint(0, 3)
+    delta_sasa   = round(random.uniform(520.0, 950.0), 1)
+    lig_burial   = round(random.uniform(74.0, 92.0), 1)
+    rmsd         = round(random.uniform(0.45, 2.2), 3)
+    motif_rmsd   = round(random.uniform(0.28, 1.35), 3)
+    n_clashes    = random.choice([0, 0, 0, 1])
 
-    hydro_pct    = round(random.uniform(5.0, 22.0), 1)
-    helix_pct    = round(random.uniform(50.0, 75.0), 1)
-    beta_pct     = round(random.uniform(0.0, 15.0), 1)
+    hydro_pct    = round(random.uniform(8.0, 24.0), 1)
+    helix_pct    = round(random.uniform(52.0, 74.0), 1)
+    beta_pct     = round(random.uniform(0.0, 14.0), 1)
     coil_pct     = round(100.0 - helix_pct - beta_pct, 1)
-    rama_out     = round(random.uniform(0.0, 1.2), 1)
+    rama_out     = round(random.uniform(0.0, 1.1), 1)
 
-    n_hb = random.randint(1, 4)
+    n_hb = random.randint(2, 5)
     hb_dens = round(100.0 * n_hb / delta_sasa, 2) if delta_sasa > 0 else 0.0
+
+    pred_dir = output_dir / seq.name
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    pred_pdb = pred_dir / "pred.pdb"
+    _write_dummy_pdb(pred_pdb, len(seq.sequence), bfactor=plddt_mean)
 
     result = ValidationResult(
         sequence                  = seq,
-        pdb_path                  = None,
+        pdb_path                  = pred_pdb,
         plddt_mean                = plddt_mean,
         plddt_pocket              = plddt_pocket,
         rmsd                      = rmsd,
@@ -1533,14 +1663,17 @@ def _dry_run_validation(
         n_interface_hbonds        = n_hb,
         n_interface_salt_bridges  = random.randint(0, 1),
         hbond_density             = hb_dens,
+        ligand_burial_pct         = lig_burial,
+        n_metal_coord             = 4,
+        metal_coord_details       = "CYS1(SG):2.25Å, CYS2(SG):2.19Å, HIS3(NE2):2.08Å, HIS4(NE2):2.04Å",
         n_unpaired_cys            = 0,
         unpaired_details          = "-",
         helix_pct                 = helix_pct,
         beta_pct                  = beta_pct,
         coil_pct                  = coil_pct,
         ramachandran_outliers_pct = rama_out,
-        n_ramachandran_outliers   = 1 if rama_out > 0 else 0,
-        ramachandran_details      = "-" if rama_out == 0 else "GLY28",
+        n_ramachandran_outliers   = 1 if rama_out > 0.8 else 0,
+        ramachandran_details      = "-" if rama_out <= 0.8 else "GLY28",
         n_liabilities             = 0,
         liabilities_details       = "-",
         metadata                  = {"dry_run": True},

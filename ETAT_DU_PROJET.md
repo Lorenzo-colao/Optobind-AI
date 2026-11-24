@@ -208,20 +208,25 @@ Exécuté le 12 Novembre 2026 sur l'environnement de production WSL2 :
 | [`optobind_ai/modules/reporting.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/optobind_ai/modules/reporting.py) | Génération des rapports tabulaires CSV et Excel (.xlsx). |
 | [`optobind_ai/utils/config.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/optobind_ai/utils/config.py) | Validation et fusion hiérarchique de la configuration YAML. |
 | [`optobind_ai/utils/runner.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/optobind_ai/utils/runner.py) | Lanceur universel avec rétrocompatibilité NumPy/DGL/collections. |
-| [`tests/test_pipeline.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/tests/test_pipeline.py) | Suite de 15 tests unitaires automatisés. |
-| [`inputs/targets/zn2+_site.pdb`](file:///c:/Users/colao/Desktop/Projet%20protéine/inputs/targets/zn2+_site.pdb) | Cible modèle de site zinc tétraédrique avec ligand DFHBI-1T. |
-| [`inputs/configs/default.yaml`](file:///c:/Users/colao/Desktop/Projet%20protéine/inputs/configs/default.yaml) | Configuration d'expérience modifiable par l'utilisateur. |
-| [`OptoBind_AI_Colab.ipynb`](file:///c:/Users/colao/Desktop/Projet%20protéine/OptoBind_AI_Colab.ipynb) | Notebook prêt pour exécution cloud GPU Nvidia. |
+| [`optobind_ai/modules/pdb_builder.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/optobind_ai/modules/pdb_builder.py) | Constructeur 100% automatisé de cibles PDB (RCSB, AlphaFold DB, PubChem, synthèse contigs 3D). |
+| [`optobind_ai/colab_worker.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/optobind_ai/colab_worker.py) | Démon Worker HTTP GPU distant pour exécution Google Colab pilotée depuis l'interface Web. |
+| [`optobind_ai/web/server.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/optobind_ai/web/server.py) | Serveur ASGI Starlette/Uvicorn pour l'application Web **OptoBind Studio**. |
+| [`web_server.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/web_server.py) / [`lancer_interface_web.bat`](file:///c:/Users/colao/Desktop/Projet%20protéine/lancer_interface_web.bat) | Lanceurs directs de l'interface Web locale (`http://127.0.0.1:8080`). |
+| [`build_pdb.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/build_pdb.py) | Interface CLI pour l'inspection et la génération automatisée de fichiers PDB cibles. |
+| [`tests/test_pipeline.py`](file:///c:/Users/colao/Desktop/Projet%20protéine/tests/test_pipeline.py) | Suite de 18 tests unitaires automatisés (100% PASS). |
+| [`inputs/targets/zn2+_1a1l_auto.pdb`](file:///c:/Users/colao/Desktop/Projet%20protéine/inputs/targets/zn2+_1a1l_auto.pdb) | Cible tétraédrique Zn²⁺ (1A1L) + DFHBI-1T générée automatiquement avec contigs multi-boucles. |
+| [`inputs/configs/default.yaml`](file:///c:/Users/colao/Desktop/Projet%20protéine/inputs/configs/default.yaml) | Configuration d'expérience modifiable par l'utilisateur (`contigs: "auto"`). |
+| [`OptoBind_AI_Colab.ipynb`](file:///c:/Users/colao/Desktop/Projet%20protéine/OptoBind_AI_Colab.ipynb) | Notebook cloud GPU Nvidia avec cellule de connexion directe à l'interface Web (Étape 4A). |
 
 ---
 
-## 7. Feuille de Route et Prochaines Actions
+## 7. Feuille de Route et Statut d'Avancement
 
-1. **Générateur Automatique de PDB & Synthesizer de Boucles (Universal Harvester) :**
-   * Automatiser l'extraction de tout site métallique ou ligand directement depuis un code PDB (RCSB), avec calcul géométrique des distances $C\alpha-C\alpha$ et insertion automatique de boucles d'espacement dans les contigs pour garantir 4/4 liaisons sans distorsion.
-2. **Score de Couplage Allostérique in silico (Apo vs Holo) :**
-   * Implémenter l'évaluation double état sous Chai-1 (avec et sans ion cible) pour quantifier le ratio dynamique ON/OFF du biocapteur avant toute synthèse.
-3. **Optimisation des Rotamères via LigandMPNN SC :**
-   * Intégration du modèle `ligandmpnn_sc_v_32_002_16.pt` pour optimiser les angles dièdres $\chi$ des chaînes latérales directement au contact du fluorophore et du métal.
-4. **Export pour Commande de Gènes (ADN) :**
-   * Rétro-traduction avec optimisation de codons pour *E. coli*, suppression des sites de restriction BsaI/BbsI et génération de fichiers de commande prêts pour Twist Bioscience ou IDT.
+1. **Générateur Automatique de PDB & Synthétiseur de Boucles (`pdb_builder.py`) :** **[COMPLÉTÉ]**
+   * Extraction automatisée depuis RCSB PDB ou AlphaFold DB, positionnement sans clash de ligands/fluorophores (SDF ou PubChem 3D), calcul exact des écarts $C\alpha-C\alpha$ et synthèse automatique des contigs multi-boucles.
+2. **Interface Web Professionnelle & Pont Google Colab (`OptoBind Studio`) :** **[COMPLÉTÉ]**
+   * Application Web complète (`http://127.0.0.1:8080`) avec visualiseur WebGL 3Dmol.js local, télémétrie temps réel, connexion tunnel HTTPS vers Google Colab GPU et synchronisation automatique des archives de résultats.
+3. **Export pour Commande de Gènes Synthétiques (ADN) :** **[COMPLÉTÉ]**
+   * Rétro-traduction optimisée CAI (*E. coli* BL21 / *Homo sapiens*), élimination des sites BsaI/BbsI/EcoRI/NdeI/XhoI et ajout optionnel His6-TEV.
+4. **Score de Couplage Allostérique in silico (Apo vs Holo) :** **[PROCHAINE ÉTAPE]**
+   * Évaluation double état sous Chai-1 (avec et sans ion cible) pour quantifier le ratio dynamique ON/OFF avant synthèse humide.

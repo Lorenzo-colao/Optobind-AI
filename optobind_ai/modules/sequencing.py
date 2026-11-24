@@ -187,6 +187,62 @@ def run_proteinmpnn(
 
     all_sequences: list[DesignedSequence] = []
 
+    if dry_run:
+        for scaffold in scaffolds:
+            logger.info("  ── Scaffold %03d : %s", scaffold.index, scaffold.pdb_path.name)
+            seqs = _dry_run_sequences(scaffold, num_seq, output_dir)
+            for s in seqs:
+                s.metadata["mpnn_model"] = selected_model
+                logger.info(
+                    "       → seq_%02d  score=%.4f  len=%d AA  [%s]",
+                    s.index, s.mpnn_score, len(s.sequence), selected_model,
+                )
+            all_sequences.extend(seqs)
+        return all_sequences
+
+    # Pré-calcul des positions exactes du motif par squelette (.trb + géométrie 3D + contigs)
+    fixed_by_scaffold: dict[str, list[int]] = {}
+    for scaffold in scaffolds:
+        fixed_by_scaffold[scaffold.name] = (
+            motif_positions_from_contigs(
+                contigs,
+                scaffold.n_residues,
+                logger,
+                scaffold_pdb=scaffold.pdb_path,
+                target_pdb=target_pdb,
+            )
+            if fix_motif else []
+        )
+
+    # Optimisation Batch GPU : Chargement unique de LigandMPNN en VRAM si > 1 squelette
+    if selected_model == "ligandmpnn" and len(scaffolds) > 1:
+        try:
+            batch_seqs = _invoke_ligandmpnn_batch(
+                scaffolds         = scaffolds,
+                output_dir        = output_dir,
+                num_seq           = num_seq,
+                sampling_temp     = sampling_temp,
+                model_weights     = ligandmpnn_weights,
+                use_cuda          = use_cuda,
+                seed              = seed,
+                logger            = logger,
+                fixed_by_scaffold = fixed_by_scaffold,
+                target_pdb        = target_pdb,
+                ligand_cutoff     = ligand_cutoff,
+                pack_side_chains  = bool(cfg.get("pack_side_chains", False)),
+            )
+            for s in batch_seqs:
+                s.metadata["mpnn_model"] = "ligandmpnn"
+                logger.info(
+                    "       → %s  score=%.4f  len=%d AA  [ligandmpnn-batch]",
+                    s.name, s.mpnn_score, len(s.sequence),
+                )
+            return batch_seqs
+        except Exception as exc:
+            logger.warning(
+                "  [LIGANDMPNN BATCH] Repli sur exécution séquentielle (%s).", exc
+            )
+
     try:
         from tqdm import tqdm
         scaffold_iter = tqdm(
@@ -203,48 +259,29 @@ def run_proteinmpnn(
         if hasattr(scaffold_iter, "set_postfix_str"):
             scaffold_iter.set_postfix_str(f"{scaffold.pdb_path.name} ({scaffold.n_residues} AA)")
 
-        if dry_run:
-            seqs = _dry_run_sequences(scaffold, num_seq, output_dir)
-        else:
-            fixed_positions = (
-                motif_positions_from_contigs(contigs, scaffold.n_residues, logger)
-                if fix_motif else []
-            )
+        fixed_positions = fixed_by_scaffold.get(scaffold.name, [])
 
-            # Exécution conditionnelle avec bascule transparente en cas d'erreur
-            if selected_model == "ligandmpnn":
-                try:
-                    seqs = _invoke_ligandmpnn(
-                        scaffold        = scaffold,
-                        output_dir      = output_dir,
-                        num_seq         = num_seq,
-                        sampling_temp   = sampling_temp,
-                        model_weights   = ligandmpnn_weights,
-                        use_cuda        = use_cuda,
-                        seed            = seed,
-                        logger          = logger,
-                        fixed_positions = fixed_positions,
-                        target_pdb      = target_pdb,
-                        ligand_cutoff   = ligand_cutoff,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "  [LIGANDMPNN FALLBACK] Échec LigandMPNN (%s). "
-                        "Bascule automatique sur ProteinMPNN vanilla.", exc
-                    )
-                    seqs = _invoke_proteinmpnn(
-                        scaffold        = scaffold,
-                        output_dir      = output_dir,
-                        num_seq         = num_seq,
-                        sampling_temp   = sampling_temp,
-                        backbone_noise  = backbone_noise,
-                        model_weights   = model_weights,
-                        use_cuda        = use_cuda,
-                        seed            = seed,
-                        logger          = logger,
-                        fixed_positions = fixed_positions,
-                    )
-            else:
+        # Exécution conditionnelle avec bascule transparente en cas d'erreur
+        if selected_model == "ligandmpnn":
+            try:
+                seqs = _invoke_ligandmpnn(
+                    scaffold        = scaffold,
+                    output_dir      = output_dir,
+                    num_seq         = num_seq,
+                    sampling_temp   = sampling_temp,
+                    model_weights   = ligandmpnn_weights,
+                    use_cuda        = use_cuda,
+                    seed            = seed,
+                    logger          = logger,
+                    fixed_positions = fixed_positions,
+                    target_pdb      = target_pdb,
+                    ligand_cutoff   = ligand_cutoff,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "  [LIGANDMPNN FALLBACK] Échec LigandMPNN (%s). "
+                    "Bascule automatique sur ProteinMPNN vanilla.", exc
+                )
                 seqs = _invoke_proteinmpnn(
                     scaffold        = scaffold,
                     output_dir      = output_dir,
@@ -257,6 +294,19 @@ def run_proteinmpnn(
                     logger          = logger,
                     fixed_positions = fixed_positions,
                 )
+        else:
+            seqs = _invoke_proteinmpnn(
+                scaffold        = scaffold,
+                output_dir      = output_dir,
+                num_seq         = num_seq,
+                sampling_temp   = sampling_temp,
+                backbone_noise  = backbone_noise,
+                model_weights   = model_weights,
+                use_cuda        = use_cuda,
+                seed            = seed,
+                logger          = logger,
+                fixed_positions = fixed_positions,
+            )
 
         for s in seqs:
             s.metadata["mpnn_model"] = selected_model
@@ -270,49 +320,239 @@ def run_proteinmpnn(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Analyse des positions du motif dans les contigs
+# Analyse exacte des positions du motif (.trb + Géométrie 3D + Contigs)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def motif_positions_from_contigs(
-    contigs: str, n_residues: int, logger: logging.Logger | None = None,
+    contigs: str,
+    n_residues: int,
+    logger: logging.Logger | None = None,
+    scaffold_pdb: Path | str | None = None,
+    target_pdb: Path | str | None = None,
 ) -> list[int]:
     """
     Déduit les positions (1-indexées) du motif à conserver depuis les contigs
-    RFdiffusion, quelle que soit la cible.
+    RFdiffusion, y compris pour les motifs multi-boucles à longueurs variables !
 
-    Segments avec lettre de chaîne (``A1-4``, ``B15``) = motif fixé ;
-    segments numériques (``70-100``) = résidus générés de novo (libres).
+    Ordre de résolution :
+      1. Métadonnées exactes RFdiffusion ``.trb`` (``con_hal_idx0``) si disponibles.
+      2. Calcul arithmétique direct si 0 ou 1 segment libre.
+      3. Alignement géométrique 3D invariant par matrice de distances Cα-Cα entre
+         ``target_pdb`` et ``scaffold_pdb`` contraint par les bornes des boucles.
     """
+    # 1. Lecture directe du fichier .trb généré par RFdiffusion
+    if scaffold_pdb:
+        trb_path = Path(scaffold_pdb).with_suffix(".trb")
+        if trb_path.is_file():
+            try:
+                import pickle
+                with trb_path.open("rb") as fh:
+                    trb = pickle.load(fh)
+                if "con_hal_idx0" in trb and len(trb["con_hal_idx0"]) > 0:
+                    return sorted(int(idx) + 1 for idx in trb["con_hal_idx0"])
+            except Exception:
+                pass
+
     if not contigs:
         return []
+
+    # Si binder inter-chaînes pur ("A1-100/0 70-100"), la chaîne générée n'a pas de motif fixe interne
+    if "/0 " in contigs or "/0," in contigs:
+        after_break = contigs.split("/0", 1)[1].strip(" ,")
+        if not re.search(r"[A-Za-z]", after_break):
+            return []
+
     segs = [s for s in re.split(r"[,/\s]+", contigs.strip("[]'\" ")) if s and s != "0"]
-    parsed = []
+    parsed: list[tuple[bool, int | None, tuple[str, int, int] | tuple[int, int]]] = []
     for s in segs:
         m = re.fullmatch(r"([A-Za-z])(\d+)(?:-(\d+))?", s)
         if m:
+            ch = m.group(1).upper()
             a = int(m.group(2))
             b = int(m.group(3) or a)
-            parsed.append((True, b - a + 1))
+            parsed.append((True, b - a + 1, (ch, a, b)))
             continue
         m = re.fullmatch(r"(\d+)(?:-(\d+))?", s)
         if m:
-            parsed.append((False, None))
-    motif_total = sum(n for is_m, n in parsed if is_m)
-    n_free = sum(1 for is_m, _ in parsed if not is_m)
-    free_len = max(0, n_residues - motif_total) if n_free == 1 else None
+            lo = int(m.group(1))
+            hi = int(m.group(2) or lo)
+            parsed.append((False, None, (lo, hi)))
 
-    positions, cursor = [], 0
-    for is_motif, n in parsed:
-        if is_motif:
+    motif_total = sum(n for is_m, n, _ in parsed if is_m and n is not None)
+    if motif_total == 0:
+        return []
+
+    n_free = sum(1 for is_m, _, _ in parsed if not is_m)
+    if n_free <= 1:
+        free_len = max(0, n_residues - motif_total) if n_free == 1 else 0
+        positions: list[int] = []
+        cursor = 0
+        for is_motif, n, _ in parsed:
+            if is_motif and n is not None:
+                positions += list(range(cursor + 1, cursor + n + 1))
+                cursor += n
+            else:
+                cursor += free_len
+        return positions
+
+    # 3. Résolution géométrique 3D exacte pour contigs multi-segments (ex: 20-27,A1,3-5,A2...)
+    if scaffold_pdb and Path(scaffold_pdb).is_file():
+        resolved_3d = _resolve_multi_segment_motif_3d(parsed, Path(scaffold_pdb), Path(target_pdb) if target_pdb else None)
+        if resolved_3d:
+            return resolved_3d
+
+    # Fallback proportionnel déterministe sur la valeur médiane des intervalles libres
+    free_bounds = [meta for is_m, _, meta in parsed if not is_m]
+    rem_total = max(0, n_residues - motif_total)
+    min_sum = sum(lo for lo, _ in free_bounds)  # type: ignore[misc]
+    span_sum = sum(max(0, hi - lo) for lo, hi in free_bounds)  # type: ignore[misc]
+
+    positions = []
+    cursor = 0
+    for is_motif, n, meta in parsed:
+        if is_motif and n is not None:
             positions += list(range(cursor + 1, cursor + n + 1))
             cursor += n
-        elif free_len is not None:
-            cursor += free_len
         else:
-            if logger:
-                logger.warning("  [MOTIF] Plusieurs segments libres : positions du motif non déterminables.")
+            lo, hi = meta  # type: ignore[misc]
+            if span_sum > 0 and rem_total >= min_sum:
+                ratio = min(1.0, (rem_total - min_sum) / span_sum)
+                alloc = lo + int(round(ratio * (hi - lo)))
+            else:
+                alloc = lo
+            cursor += alloc
+    return [p for p in positions if 1 <= p <= n_residues]
+
+
+def _resolve_multi_segment_motif_3d(
+    parsed_segs: list[Any],
+    scaffold_pdb: Path,
+    target_pdb: Path | None,
+) -> list[int]:
+    """
+    Identifie exactement les indices 1-based des blocs du motif dans ``scaffold_pdb``
+    en minimisant l'erreur de matrice de distances Cα-Cα par rapport à ``target_pdb``
+    sous les contraintes topologiques exactes des intervalles de boucles.
+    """
+    try:
+        import numpy as np
+
+        def _extract_ca_map(p: Path) -> tuple[list[tuple[str, int, str, np.ndarray]], dict[tuple[str, int], tuple[str, np.ndarray]]]:
+            ordered = []
+            by_id = {}
+            seen = set()
+            with p.open("r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    if line.startswith("ATOM  ") and line[12:16].strip() == "CA":
+                        ch = line[21].strip() or "A"
+                        rseq = int(line[22:26].strip())
+                        rname = line[17:20].strip().upper()
+                        if (ch, rseq) in seen:
+                            continue
+                        seen.add((ch, rseq))
+                        xyz = np.array([float(line[30:38]), float(line[38:46]), float(line[46:54])], dtype=np.float64)
+                        ordered.append((ch, rseq, rname, xyz))
+                        by_id[(ch, rseq)] = (rname, xyz)
+            return ordered, by_id
+
+        scaf_ordered, _ = _extract_ca_map(scaffold_pdb)
+        if not scaf_ordered:
             return []
-    return positions
+        L = len(scaf_ordered)
+        scaf_xyz = np.array([x[3] for x in scaf_ordered], dtype=np.float64)
+
+        tgt_by_id = {}
+        if target_pdb and target_pdb.is_file():
+            _, tgt_by_id = _extract_ca_map(target_pdb)
+
+        # Construire la séquence des blocs motifs et des intervalles libres
+        # Normaliser pour alterner : [free_0, motif_0, free_1, motif_1, ..., free_K]
+        motif_blocks: list[list[tuple[str, int]]] = []
+        free_intervals: list[tuple[int, int]] = []
+
+        cur_free_lo, cur_free_hi = 0, 0
+        for is_m, _, meta in parsed_segs:
+            if not is_m:
+                lo, hi = meta
+                cur_free_lo += lo
+                cur_free_hi += hi
+            else:
+                ch, a, b = meta
+                if motif_blocks and cur_free_lo == 0 and cur_free_hi == 0:
+                    motif_blocks[-1].extend((ch, r) for r in range(a, b + 1))
+                else:
+                    free_intervals.append((cur_free_lo, cur_free_hi))
+                    motif_blocks.append([(ch, r) for r in range(a, b + 1)])
+                cur_free_lo, cur_free_hi = 0, 0
+        free_intervals.append((cur_free_lo, cur_free_hi))
+
+        if not motif_blocks:
+            return []
+
+        # Coordonnées Cα de référence pour le premier résidu de chaque bloc motif
+        ref_anchors = []
+        ref_names = []
+        has_ref_3d = True
+        for blk in motif_blocks:
+            ch, rseq = blk[0]
+            if (ch, rseq) in tgt_by_id:
+                rname, xyz = tgt_by_id[(ch, rseq)]
+                ref_names.append(rname)
+                ref_anchors.append(xyz)
+            else:
+                has_ref_3d = False
+                break
+
+        K = len(motif_blocks)
+        block_lens = [len(b) for b in motif_blocks]
+
+        # Recherche récursive bornée des positions de départ (0-indexées) de chaque bloc
+        best_starts: list[int] | None = None
+        best_err = float("inf")
+
+        ref_dist_mat = None
+        if has_ref_3d and len(ref_anchors) == K:
+            ref_arr = np.array(ref_anchors, dtype=np.float64)
+            ref_dist_mat = np.linalg.norm(ref_arr[:, None, :] - ref_arr[None, :, :], axis=-1)
+
+        def _dfs(idx: int, prev_end: int, chosen: list[int]) -> None:
+            nonlocal best_starts, best_err
+            lo_g, hi_g = free_intervals[idx]
+            min_start = prev_end + lo_g
+            max_start = min(prev_end + hi_g, L - sum(block_lens[idx:]))
+
+            for s_pos in range(min_start, max_start + 1):
+                end_pos = s_pos + block_lens[idx]
+                if idx == K - 1:
+                    tail_lo, tail_hi = free_intervals[K]
+                    rem = L - end_pos
+                    if not (tail_lo <= rem <= tail_hi):
+                        continue
+                    cand = chosen + [s_pos]
+                    err = 0.0
+                    if ref_dist_mat is not None:
+                        c_xyz = scaf_xyz[cand]
+                        c_mat = np.linalg.norm(c_xyz[:, None, :] - c_xyz[None, :, :], axis=-1)
+                        err = float(np.max(np.abs(c_mat - ref_dist_mat)))
+                        # Bonus si les noms d'acides aminés correspondent
+                        for m_i, st in enumerate(cand):
+                            if scaf_ordered[st][2] != ref_names[m_i]:
+                                err += 0.25
+                    if err < best_err:
+                        best_err = err
+                        best_starts = cand
+                else:
+                    _dfs(idx + 1, end_pos, chosen + [s_pos])
+
+        _dfs(0, 0, [])
+        if best_starts is not None:
+            out_pos: list[int] = []
+            for b_i, st in enumerate(best_starts):
+                out_pos.extend(range(st + 1, st + block_lens[b_i] + 1))
+            return out_pos
+    except Exception:
+        pass
+    return []
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -427,6 +667,132 @@ def _prepare_scaffold_for_ligandmpnn(
 
     logger.debug("  [LIGANDMPNN] Complexe enrichi généré : %s (+%d lignes HETATM)", complex_pdb.name, len(hetatm_lines))
     return complex_pdb
+
+
+def _invoke_ligandmpnn_batch(
+    scaffolds         : list[Scaffold],
+    output_dir        : Path,
+    num_seq           : int,
+    sampling_temp     : float,
+    model_weights     : str,
+    use_cuda          : bool,
+    seed              : int,
+    logger            : logging.Logger,
+    fixed_by_scaffold : dict[str, list[int]],
+    target_pdb        : Path | str | None = None,
+    ligand_cutoff     : float = 8.0,
+    pack_side_chains  : bool = False,
+) -> list[DesignedSequence]:
+    """
+    Exécute LigandMPNN en session GPU unique (``--pdb_path_multi`` + ``--fixed_residues_multi``)
+    sur l'ensemble des squelettes simultanément, divisant le temps d'initialisation par N.
+    """
+    ligand_script = _find_or_clone_ligandmpnn(logger)
+    weights_path = _resolve_ligandmpnn_weights(model_weights, ligand_script, logger)
+    if not weights_path.exists() or weights_path.stat().st_size < 1_000_000:
+        raise FileNotFoundError(f"Poids LigandMPNN introuvables : {weights_path}")
+
+    batch_dir = output_dir / "_ligandmpnn_batch"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    pdb_multi: dict[str, str] = {}
+    fixed_multi: dict[str, str] = {}
+    stem_by_scaffold: dict[str, str] = {}
+
+    for sc in scaffolds:
+        input_pdb = _prepare_scaffold_for_ligandmpnn(sc, target_pdb, batch_dir, logger)
+        pdb_key = str(input_pdb.resolve())
+        pdb_multi[pdb_key] = ""
+        stem_by_scaffold[sc.name] = input_pdb.stem
+
+        f_pos = fixed_by_scaffold.get(sc.name, [])
+        if f_pos:
+            chain_id = "A"
+            try:
+                with input_pdb.open("r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if line.startswith("ATOM"):
+                            chain_id = line[21].strip() or "A"
+                            break
+            except Exception:
+                pass
+            fixed_multi[pdb_key] = " ".join(f"{chain_id}{p}" for p in f_pos)
+        else:
+            fixed_multi[pdb_key] = ""
+
+    pdb_json_path = batch_dir / "pdb_path_multi.json"
+    fixed_json_path = batch_dir / "fixed_residues_multi.json"
+    pdb_json_path.write_text(json.dumps(pdb_multi, indent=2), encoding="utf-8")
+    fixed_json_path.write_text(json.dumps(fixed_multi, indent=2), encoding="utf-8")
+
+    runner_script = (Path(__file__).resolve().parent.parent / "utils" / "runner.py").resolve()
+    batch_size = min(num_seq, 8)
+    number_of_batches = max(1, (num_seq + batch_size - 1) // batch_size)
+
+    cmd = [
+        sys.executable, str(runner_script), str(ligand_script),
+        "--model_type",                   "ligand_mpnn",
+        "--checkpoint_ligand_mpnn",       str(weights_path),
+        "--pdb_path_multi",               str(pdb_json_path),
+        "--fixed_residues_multi",         str(fixed_json_path),
+        "--out_folder",                   str(batch_dir),
+        "--temperature",                  str(sampling_temp),
+        "--batch_size",                   str(batch_size),
+        "--number_of_batches",            str(number_of_batches),
+        "--seed",                         str(seed),
+        "--ligand_mpnn_use_atom_context", "1",
+        "--ligand_mpnn_cutoff_for_score", str(ligand_cutoff),
+    ]
+
+    if pack_side_chains:
+        sc_weights = Path("weights/ligandmpnn_sc_v_32_002_16.pt")
+        if sc_weights.is_file() and sc_weights.stat().st_size > 500_000:
+            cmd += ["--pack_side_chains", "1", "--checkpoint_path_sc", str(sc_weights.resolve())]
+
+    env = os.environ.copy()
+    mpnn_root = ligand_script.parent
+    current_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join([str(mpnn_root)] + ([current_pp] if current_pp else []))
+
+    logger.info("  ⚡ [LIGANDMPNN BATCH] Session GPU unique lancée pour %d squelettes...", len(scaffolds))
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    if result.returncode != 0:
+        raise RuntimeError(f"LigandMPNN batch code={result.returncode} : {result.stderr.strip()[:200]}")
+
+    all_designed: list[DesignedSequence] = []
+    seqs_dir = batch_dir / "seqs"
+    for sc in scaffolds:
+        stem = stem_by_scaffold[sc.name]
+        fa_file = seqs_dir / f"{stem}.fa"
+        if not fa_file.exists():
+            fa_file = seqs_dir / f"{stem}.fasta"
+        if not fa_file.exists():
+            raise FileNotFoundError(f"Fichier FASTA LigandMPNN manquant pour {sc.name} ({fa_file})")
+
+        seq_index = 0
+        for header, sequence in read_fasta(fa_file):
+            score = _parse_global_score(header)
+            fasta_out = output_dir / f"{sc.name}_seq_{seq_index:02d}.fasta"
+            props = compute_physicochemical_properties(sequence)
+            ds = DesignedSequence(
+                index=seq_index,
+                scaffold=sc,
+                sequence=sequence,
+                fasta_path=fasta_out,
+                mpnn_score=score,
+                pi=props["pi"],
+                charge_ph7=props["charge_ph7"],
+                gravy=props["gravy"],
+                mw_kda=props["mw_kda"],
+                metadata={"mpnn_header": header, "instability": props["instability"]},
+            )
+            fasta_out.write_text(ds.to_fasta(), encoding="utf-8")
+            all_designed.append(ds)
+            seq_index += 1
+            if seq_index >= num_seq:
+                break
+
+    return all_designed
 
 
 def _invoke_ligandmpnn(

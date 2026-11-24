@@ -64,7 +64,12 @@ _CSV_HEADERS = [
     "rmsd_angstrom",
     "motif_rmsd_angstrom",
     "n_steric_clashes",
+    "ligand_burial_pct",
+    "n_metal_coord",
+    "metal_coord_details",
+    "composite_score",
     "passed",
+    "sequence",
     "scaffold_pdb",
     "predicted_pdb",
     "fasta_path",
@@ -144,12 +149,27 @@ def build_report(
             "rmsd_angstrom"           : f"{val.rmsd:.4f}"                  if val else "N/A",
             "motif_rmsd_angstrom"     : f"{val.motif_rmsd:.4f}"            if val else "N/A",
             "n_steric_clashes"        : str(val.n_clashes)                 if val else "N/A",
+            "ligand_burial_pct"       : f"{val.ligand_burial_pct:.1f}%"    if val else "N/A",
+            "n_metal_coord"           : str(val.n_metal_coord)             if val else "N/A",
+            "metal_coord_details"     : val.metal_coord_details            if val else "N/A",
+            "composite_score"         : f"{val.composite_score:.1f}"       if val else "0.0",
             "passed"            : str(val.passed) if val else ("False (Pre-Filter)" if seq.metadata.get("rejection_reason") else "N/A"),
+            "sequence"          : seq.sequence,
             "scaffold_pdb"      : str(seq.scaffold.pdb_path),
             "predicted_pdb"     : str(val.pdb_path or "N/A") if val else (f"EXCLUDED: {seq.metadata['rejection_reason']}" if seq.metadata.get("rejection_reason") else "N/A"),
             "fasta_path"        : str(seq.fasta_path),
         }
         rows.append(row)
+
+    # Trier par candidats validés d'abord puis par composite_score décroissant
+    rows.sort(
+        key=lambda r: (
+            r["passed"] == "True",
+            float(r["composite_score"]) if r["composite_score"] not in ("N/A", "") else -1.0,
+            -float(r["mpnn_score"]),
+        ),
+        reverse=True,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8-sig") as fh:
@@ -157,13 +177,23 @@ def build_report(
         writer.writeheader()
         writer.writerows(rows)
 
-    # Export automatique au format Excel natif (.xlsx) pour compatibilité universelle FR & EN
+    # Export automatique au format Excel natif (.xlsx) via openpyxl direct (sans dépendance lourde pandas)
     xlsx_path = output_path.with_suffix(".xlsx")
     try:
-        import pandas as pd
-        df = pd.DataFrame(rows)
-        with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="OptoBind_Validation")
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "OptoBind_Validation"
+        ws.append(_CSV_HEADERS)
+        header_fill = PatternFill(start_color="181B22", end_color="181B22", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+        for r in rows:
+            ws.append([r.get(h, "") for h in _CSV_HEADERS])
+        wb.save(xlsx_path)
         logger.debug("[REPORT] Rapport Excel natif écrit : %s", xlsx_path)
     except Exception as exc:
         logger.debug("[REPORT] Export .xlsx ignoré : %s", exc)
@@ -191,12 +221,10 @@ def print_summary(
     # Sur Windows, assurer l'encodage UTF-8 pour les caractères spéciaux (═─✓✗)
     if _sys.platform == "win32":
         try:
-            import io
-            _out = io.TextIOWrapper(_sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-        except AttributeError:
-            _out = _sys.stdout
-    else:
-        _out = _sys.stdout
+            _sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    _out = _sys.stdout
 
     def _print(*args, **kwargs):
         kwargs.setdefault("file", _out)

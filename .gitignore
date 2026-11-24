@@ -18,6 +18,8 @@ LigandMPNN/
 
 # ── Sorties et logs de calculs ────────────────────────────────────────────────
 outputs/
+inputs/targets/_cache/
+inputs/remote_jobs/
 *.log
 
 # ── Cache Python & Bytecode ───────────────────────────────────────────────────

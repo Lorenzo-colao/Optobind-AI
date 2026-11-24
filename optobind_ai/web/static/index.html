@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OptoBind Studio — De Novo Protein &amp; Biosensor Engineering</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="/static/vendor/3Dmol-min.js"></script>
+</head>
+<body>
+  <!-- ── Barre de Navigation Supérieure ──────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 21 7 21 17 12 22 3 17 3 7 12 2"></polygon>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+      </div>
+      <span class="brand-title">OptoBind</span>
+      <span class="brand-sep">/</span>
+      <span class="brand-sub">Studio</span>
+      <span class="version-tag">v0.2.0</span>
+    </div>
+
+    <nav class="nav-tabs" role="tablist">
+      <button class="nav-tab active" data-tab="builder" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+          <line x1="12" y1="22.08" x2="12" y2="12"></line>
+        </svg>
+        Constructeur PDB
+      </button>
+      <button class="nav-tab" data-tab="pipeline" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+          <polygon points="5 3 19 12 5 21 5 3"></polygon>
+        </svg>
+        Pipeline &amp; Exécution
+      </button>
+      <button class="nav-tab" data-tab="results" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+          <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+          <line x1="3" y1="9" x2="21" y2="9"></line>
+          <line x1="9" y1="21" x2="9" y2="9"></line>
+        </svg>
+        Structures &amp; Métriques
+      </button>
+    </nav>
+
+    <div class="topbar-right">
+      <button id="btn-colab-modal" class="colab-pill" type="button">
+        <span id="colab-dot" class="status-dot"></span>
+        <span id="colab-label">Google Colab : Déconnecté</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="workspace-shell">
+    <!-- ════════════════════════════════════════════════════════════════════
+         VUE 1 : CONSTRUCTEUR AUTOMATISÉ DE CIBLES PDB
+         ════════════════════════════════════════════════════════════════════ -->
+    <section id="view-builder" class="view-panel active">
+      <div class="split-layout split-builder">
+        <div class="pane-scroll">
+          <!-- 1. Source Structurale -->
+          <div class="section-block">
+            <div class="section-header">
+              <h2 class="section-title">01 · Source Structurale</h2>
+              <span class="section-hint">RCSB PDB · AlphaFold DB · Local</span>
+            </div>
+            <div class="field">
+              <label for="pdb-source-input">Identifiant PDB (4 car.), UniProt ou chemin local</label>
+              <div class="input-row">
+                <input id="pdb-source-input" class="input mono" type="text" value="1A1L" placeholder="ex: 1A1L, 2CBA, P00918" />
+                <button id="btn-inspect-pdb" class="btn btn-primary" type="button">Inspecter</button>
+              </div>
+              <div class="chip-row">
+                <button class="chip" data-preset-source="1A1L" type="button">1A1L (Zn C2H2)</button>
+                <button class="chip" data-preset-source="2CBA" type="button">2CBA (Zn His3)</button>
+                <button class="chip" data-preset-source="inputs/targets/zn2+_site.pdb" type="button">zn2+_site.pdb</button>
+                <label class="chip" style="cursor:pointer;">
+                  Importer .pdb/.cif
+                  <input id="upload-target-file" type="file" accept=".pdb,.cif,.mmcif" hidden />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. Mode d'Extraction & Entités Détectées -->
+          <div class="section-block">
+            <div class="section-header">
+              <h2 class="section-title">02 · Mode d'Extraction Cible</h2>
+              <span id="inspect-summary-badge" class="badge badge-neutral">En attente</span>
+            </div>
+
+            <div class="mode-cards" id="builder-mode-cards">
+              <button class="mode-card active" data-mode="metal_site" type="button">
+                <div class="mode-card-title">Site Métallique</div>
+                <div class="mode-card-sub">Sphère 3D + LINK/CONECT</div>
+              </button>
+              <button class="mode-card" data-mode="ligand_pocket" type="button">
+                <div class="mode-card-title">Poche Ligand</div>
+                <div class="mode-card-sub">Ligand lié + résidus clés</div>
+              </button>
+              <button class="mode-card" data-mode="protein_binder" type="button">
+                <div class="mode-card-title">Domaine Cible</div>
+                <div class="mode-card-sub">Épitope / Binder PPI</div>
+              </button>
+            </div>
+
+            <div id="builder-entities-container" class="field">
+              <label>Entités cristallographiques détectées</label>
+              <div id="builder-entity-list" class="entity-list">
+                <div style="color:var(--text-muted);font-size:12px;padding:6px 2px;">
+                  Cliquez sur « Inspecter » pour analyser les chaînes, métaux et ligands.
+                </div>
+              </div>
+            </div>
+
+            <div id="protein-binder-fields" style="display:none; margin-top:10px;">
+              <div class="field-grid">
+                <div class="field">
+                  <label for="binder-chain-input">Chaîne cible</label>
+                  <input id="binder-chain-input" class="input mono" type="text" value="A" />
+                </div>
+                <div class="field">
+                  <label for="binder-range-input">Plage résidus (opt.)</label>
+                  <input id="binder-range-input" class="input mono" type="text" placeholder="ex: 1-120" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. Co-positionnement Rapporteur / Fluorophore & Contigs -->
+          <div class="section-block">
+            <div class="section-header">
+              <h2 class="section-title">03 · Ligand Rapporteur &amp; Synthèse Contigs</h2>
+              <span class="section-hint">PubChem 3D / SDF</span>
+            </div>
+
+            <div id="reporter-fields">
+              <div class="field">
+                <label for="reporter-ligand-input">
+                  <span>Fluorophore / Cofacteur co-embarqué (optionnel)</span>
+                </label>
+                <div class="input-row">
+                  <input id="reporter-ligand-input" class="input mono" type="text" value="inputs/ligands/DFHBI-1T.sdf" placeholder="Nom PubChem (caffeine, ATP), CID ou .sdf" />
+                  <button id="btn-fetch-pubchem" class="btn btn-sm" type="button" title="Télécharger le conformère 3D depuis PubChem">PubChem</button>
+                </div>
+              </div>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="reporter-dist-input">Distance allostérique (Å)</label>
+                  <input id="reporter-dist-input" class="input mono" type="number" step="0.5" min="5.5" max="15.0" value="8.5" />
+                </div>
+                <div class="field">
+                  <label for="builder-out-name">Fichier PDB de sortie</label>
+                  <input id="builder-out-name" class="input mono" type="text" value="zn2+_1a1l_auto.pdb" />
+                </div>
+              </div>
+            </div>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="builder-min-len">Longueur min (AA)</label>
+                <input id="builder-min-len" class="input mono" type="number" min="35" max="400" value="70" />
+              </div>
+              <div class="field">
+                <label for="builder-max-len">Longueur max (AA)</label>
+                <input id="builder-max-len" class="input mono" type="number" min="40" max="500" value="100" />
+              </div>
+            </div>
+
+            <div style="display:flex; gap:8px; margin-top:12px;">
+              <button id="btn-build-pdb" class="btn btn-primary btn-block" type="button">
+                Générer le PDB Cible &amp; Calculer les Contigs
+              </button>
+            </div>
+          </div>
+
+          <!-- 4. Résultat de la Synthèse -->
+          <div id="build-result-card" class="section-block" style="display:none;">
+            <div class="section-header">
+              <h2 class="section-title">04 · Cible Prête pour RFdiffusion</h2>
+              <span class="badge badge-pass">Validé 3D</span>
+            </div>
+            <div class="field">
+              <label>Contigs RFdiffusion synthétisés (avec boucles sans tension)</label>
+              <input id="built-contigs-output" class="input mono" type="text" readonly />
+            </div>
+            <div style="display:flex; gap:8px; margin-top:10px;">
+              <button id="btn-apply-to-pipeline" class="btn btn-primary btn-block" type="button">
+                Utiliser cette cible dans le Pipeline -&gt;
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Colonne Droite : Visualiseur 3D WebGL + Diagnostic Géométrique -->
+        <div class="pane-right">
+          <div class="viewport-header">
+            <div class="viewport-title">
+              <span>VIEWPORT 3D</span>
+              <span id="builder-viewer-filename" class="badge badge-neutral">Aucune structure chargée</span>
+            </div>
+            <div class="viewport-controls">
+              <select id="builder-style-select" class="input" style="width:auto; padding:4px 8px; font-size:11.5px;">
+                <option value="cartoon_sticks">Ruban + Bâtonnets Actifs</option>
+                <option value="sticks">Tout-Atomes (Sticks)</option>
+                <option value="surface">Surface Moléculaire</option>
+              </select>
+              <button id="btn-builder-reset-cam" class="btn btn-sm" type="button">Centrer</button>
+            </div>
+          </div>
+
+          <div class="mol-stage-wrap">
+            <div id="builder-mol-canvas" class="mol-canvas"></div>
+            <div id="builder-mol-empty" class="viewport-empty">
+              <span>Inspectez un code PDB ou générez une cible pour afficher le complexe 3D.</span>
+            </div>
+            <div class="viewport-legend">
+              <div class="legend-item"><span class="legend-swatch" style="background:#94a3b8;"></span>Squelette</div>
+              <div class="legend-item"><span class="legend-swatch" style="background:#f59e0b;"></span>Motif Coordinant</div>
+              <div class="legend-item"><span class="legend-swatch" style="background:#38bdf8;"></span>Ion Métallique</div>
+              <div class="legend-item"><span class="legend-swatch" style="background:#10b981;"></span>Fluorophore / Ligand</div>
+            </div>
+          </div>
+
+          <div id="builder-diagnostics" class="diagnostics-drawer">
+            <div class="section-header" style="margin-bottom:8px;">
+              <h3 class="section-title">Analyse Géométrique des Écarts Cα–Cα &amp; Coordination</h3>
+              <span id="builder-geom-badge" class="mono" style="font-size:11.5px; color:var(--text-secondary);">—</span>
+            </div>
+            <div id="builder-gap-table-wrap" style="color:var(--text-muted); font-size:12px;">
+              Les distances de liaison métal-donneur et les boucles d'espacement peptidique s'afficheront ici après génération.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         VUE 2 : PIPELINE & CONSOLE D'EXÉCUTION (COLAB GPU / LOCAL)
+         ════════════════════════════════════════════════════════════════════ -->
+    <section id="view-pipeline" class="view-panel">
+      <div class="split-layout split-pipeline">
+        <div class="pane-scroll">
+          <!-- Moteur d'exécution -->
+          <div class="section-block">
+            <div class="section-header">
+              <h2 class="section-title">Moteur d'Exécution</h2>
+              <div class="chip-row" style="margin:0;">
+                <button class="chip" data-cfg-preset="fast" type="button">Criblage Rapide</button>
+                <button class="chip active" data-cfg-preset="balanced" type="button">Équilibré</button>
+                <button class="chip" data-cfg-preset="production" type="button">Production</button>
+              </div>
+            </div>
+
+            <div class="mode-cards" id="exec-mode-cards">
+              <button class="mode-card active" data-exec="colab" type="button">
+                <div class="mode-card-title">Google Colab GPU</div>
+                <div class="mode-card-sub">Tunnel Worker distant</div>
+              </button>
+              <button class="mode-card" data-exec="local_wsl" type="button">
+                <div class="mode-card-title">Local WSL2</div>
+                <div class="mode-card-sub">Env conda optobind-ai</div>
+              </button>
+              <button class="mode-card" data-exec="dry_run" type="button">
+                <div class="mode-card-title">Dry-Run CPU</div>
+                <div class="mode-card-sub">Simulation instantanée</div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Entrées & Contigs -->
+          <div class="section-block">
+            <div class="section-header">
+              <h2 class="section-title">Entrées &amp; Topologie Contigs</h2>
+            </div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="cfg-target-select">Cible PDB</label>
+                <select id="cfg-target-select"></select>
+              </div>
+              <div class="field">
+                <label for="cfg-ligand-select">Ligand / Fluorophore SDF</label>
+                <select id="cfg-ligand-select"></select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="cfg-contigs">
+                <span>Contigs RFdiffusion</span>
+                <span class="section-hint">"auto" = calcul 3D</span>
+              </label>
+              <input id="cfg-contigs" class="input mono" type="text" value="auto" />
+            </div>
+          </div>
+
+          <!-- Module 1 & Module 2 -->
+          <div class="section-block">
+            <div class="section-header">
+              <h2 class="section-title">01 · RFdiffusion All-Atom &amp; 02 · LigandMPNN</h2>
+            </div>
+            <div class="field-grid-3">
+              <div class="field">
+                <label for="cfg-n-variants">Squelettes</label>
+                <input id="cfg-n-variants" class="input mono" type="number" min="1" max="50" value="2" />
+              </div>
+              <div class="field">
+                <label for="cfg-min-len">Min AA</label>
+                <input id="cfg-min-len" class="input mono" type="number" min="30" max="450" value="70" />
+              </div>
+              <div class="field">
+                <label for="cfg-max-len">Max AA</label>
+                <input id="cfg-max-len" class="input mono" type="number" min="35" max="500" value="100" />
+              </div>
+            </div>
+            <div class="field-grid-3">
+              <div class="field">
+                <label for="cfg-diff-steps">Steps (T)</label>
+                <input id="cfg-diff-steps" class="input mono" type="number" min="15" max="200" value="50" />
+              </div>
+              <div class="field">
+                <label for="cfg-mpnn-model">Modèle séquence</label>
+                <select id="cfg-mpnn-model">
+                  <option value="auto">Auto (Optimal)</option>
+                  <option value="ligandmpnn">LigandMPNN</option>
+                  <option value="proteinmpnn">ProteinMPNN</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="cfg-seqs-per-scaf">Séqs / Scaf.</label>
+                <input id="cfg-seqs-per-scaf" class="input mono" type="number" min="1" max="64" value="8" />
+              </div>
+            </div>
+            <div class="field-grid-3">
+              <div class="field">
+                <label for="cfg-temp">Température</label>
+                <input id="cfg-temp" class="input mono" type="number" step="0.05" min="0.05" max="1.0" value="0.10" />
+              </div>
+              <div class="field">
+                <label for="cfg-ph">pH Cible</label>
+                <input id="cfg-ph" class="input mono" type="number" step="0.1" min="4.0" max="10.0" value="7.4" />
+              </div>
+              <div class="field">
+                <label for="cfg-seed">Graine (Seed)</label>
+                <input id="cfg-seed" class="input mono" type="number" value="42" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Pré-filtre CPU & Validation Chai-1 -->
+          <div class="section-block">
+            <div class="section-header">
+              <h2 class="section-title">03 · Smart Pre-Filter &amp; Validation Chai-1</h2>
+            </div>
+            <div class="field-grid-3">
+              <div class="field">
+                <label for="cfg-topk">Quota Top-K</label>
+                <input id="cfg-topk" class="input mono" type="number" min="0" max="32" value="3" />
+              </div>
+              <div class="field">
+                <label for="cfg-recycles">Recycles Chai-1</label>
+                <input id="cfg-recycles" class="input mono" type="number" min="1" max="10" value="3" />
+              </div>
+              <div class="field">
+                <label for="cfg-samples">Diffn Samples</label>
+                <input id="cfg-samples" class="input mono" type="number" min="1" max="5" value="3" />
+              </div>
+            </div>
+            <div class="field-grid-3">
+              <div class="field">
+                <label for="cfg-plddt-thresh">Seuil pLDDT</label>
+                <input id="cfg-plddt-thresh" class="input mono" type="number" step="1" min="50" max="99" value="85" />
+              </div>
+              <div class="field">
+                <label for="cfg-rmsd-thresh">RMSD Global (Å)</label>
+                <input id="cfg-rmsd-thresh" class="input mono" type="number" step="0.1" value="2.0" />
+              </div>
+              <div class="field">
+                <label for="cfg-mrmsd-thresh">RMSD Motif (Å)</label>
+                <input id="cfg-mrmsd-thresh" class="input mono" type="number" step="0.1" value="1.5" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Boutons d'Action -->
+          <div style="display:flex; gap:8px;">
+            <button id="btn-start-job" class="btn btn-primary btn-block" type="button">
+              Lancer l'Exécution du Pipeline
+            </button>
+            <button id="btn-cancel-job" class="btn btn-danger" type="button" style="display:none;">
+              Interrompre
+            </button>
+          </div>
+        </div>
+
+        <!-- Colonne Droite : Télémétrie 5 Étapes & Console Temps Réel -->
+        <div class="pane-right">
+          <div class="telemetry-bar">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span id="job-status-badge" class="badge badge-neutral">PRET</span>
+                <span id="job-id-label" class="mono" style="font-size:12px; color:var(--text-secondary);">Aucun job actif</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:12px;">
+                <span id="job-elapsed" class="mono" style="font-size:12px; color:var(--text-muted);">0.0s</span>
+                <button id="btn-open-completed-run" class="btn btn-sm btn-primary" type="button" style="display:none;">
+                  Ouvrir les Résultats 3D -&gt;
+                </button>
+              </div>
+            </div>
+
+            <div class="stepper" id="pipeline-stepper">
+              <div class="step-node" data-stage="scaffolding">
+                <span class="step-index">01</span>
+                <span class="step-label">RFdiffusion</span>
+              </div>
+              <div class="step-node" data-stage="sequencing">
+                <span class="step-index">02</span>
+                <span class="step-label">LigandMPNN</span>
+              </div>
+              <div class="step-node" data-stage="prefilter">
+                <span class="step-index">03</span>
+                <span class="step-label">Pre-Filter</span>
+              </div>
+              <div class="step-node" data-stage="validation">
+                <span class="step-index">04</span>
+                <span class="step-label">Chai-1 3D</span>
+              </div>
+              <div class="step-node" data-stage="reporting">
+                <span class="step-index">05</span>
+                <span class="step-label">Rapport</span>
+              </div>
+            </div>
+
+            <div class="progress-track">
+              <div id="job-progress-fill" class="progress-fill"></div>
+            </div>
+          </div>
+
+          <div class="terminal-wrap">
+            <div class="terminal-toolbar">
+              <span>FLUX JOURNAL D'EXÉCUTION (STDOUT / COLAB STREAM)</span>
+              <button id="btn-clear-logs" class="btn btn-sm" type="button" style="padding:2px 7px;">Effacer</button>
+            </div>
+            <div id="job-terminal" class="terminal-output">En attente de lancement. Configurez les paramètres à gauche puis cliquez sur « Lancer l'Exécution du Pipeline ».</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         VUE 3 : EXPLORATEUR DE STRUCTURES 3D, MÉTRIQUES & SYNTHÈSE ADN
+         ════════════════════════════════════════════════════════════════════ -->
+    <section id="view-results" class="view-panel">
+      <div class="split-layout split-results">
+        <!-- Barre supérieure des résultats -->
+        <div class="results-topbar">
+          <div class="results-controls">
+            <select id="runs-select" class="mono" style="width:290px;"></select>
+            <button id="btn-refresh-runs" class="btn btn-sm" type="button">Actualiser</button>
+            <div class="chip-row" style="margin:0 0 0 6px;" id="results-filter-chips">
+              <button class="chip active" data-filter="all" type="button">Tous</button>
+              <button class="chip" data-filter="validated" type="button">Validés 3D</button>
+              <button class="chip" data-filter="passed" type="button">PASS strict</button>
+            </div>
+            <input id="results-search" class="input mono" type="text" placeholder="Filtrer variant..." style="width:150px; padding:4px 8px;" />
+          </div>
+
+          <div class="kpi-strip">
+            <div class="kpi-item">
+              <span class="kpi-label">Origine</span>
+              <span id="kpi-origin" class="kpi-val">—</span>
+            </div>
+            <div class="kpi-item">
+              <span class="kpi-label">Séquences</span>
+              <span id="kpi-total" class="kpi-val">0</span>
+            </div>
+            <div class="kpi-item">
+              <span class="kpi-label">PASS / Validés</span>
+              <span id="kpi-passed" class="kpi-val">0 / 0</span>
+            </div>
+            <div class="kpi-item">
+              <span class="kpi-label">Max pLDDT</span>
+              <span id="kpi-plddt" class="kpi-val">—</span>
+            </div>
+            <div class="kpi-item">
+              <span class="kpi-label">Score Max</span>
+              <span id="kpi-score" class="kpi-val">—</span>
+            </div>
+            <div style="display:flex; gap:6px; margin-left:6px;">
+              <button id="btn-dl-xlsx" class="btn btn-sm" type="button">Excel .xlsx</button>
+              <button id="btn-dl-csv" class="btn btn-sm" type="button">CSV</button>
+              <button id="btn-dl-zip" class="btn btn-sm" type="button">Archive .zip</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Corps : Tableau Scientifique + Inspecteur 3D & ADN -->
+        <div class="results-body-grid">
+          <div class="table-pane">
+            <table class="data-table" id="variants-table">
+              <thead>
+                <tr>
+                  <th data-sort="variant_name">Variant</th>
+                  <th data-sort="passed">Statut</th>
+                  <th data-sort="composite_score">Score</th>
+                  <th data-sort="plddt_mean">pLDDT</th>
+                  <th data-sort="plddt_pocket">Poche</th>
+                  <th data-sort="iptm">ipTM</th>
+                  <th data-sort="motif_rmsd_angstrom">mRMSD</th>
+                  <th data-sort="rmsd_angstrom">RMSD</th>
+                  <th data-sort="delta_sasa">ΔSASA</th>
+                  <th data-sort="hydrophobic_sasa_pct">%Hydro</th>
+                  <th data-sort="n_interface_hbonds">H-Bonds</th>
+                  <th data-sort="ramachandran_outliers_pct">Rama</th>
+                  <th data-sort="n_steric_clashes">Clashes</th>
+                  <th data-sort="solubility_score">Solub</th>
+                </tr>
+              </thead>
+              <tbody id="variants-tbody"></tbody>
+            </table>
+          </div>
+
+          <div class="inspector-pane">
+            <!-- Visualiseur 3D du Candidat Sélectionné -->
+            <div style="display:flex; flex-direction:column; height:100%; overflow:hidden;">
+              <div class="viewport-header">
+                <div class="viewport-title">
+                  <span id="insp-variant-title">Sélectionnez un candidat</span>
+                  <span id="insp-coord-badge" class="badge badge-neutral" style="display:none;"></span>
+                </div>
+                <div class="viewport-controls">
+                  <select id="insp-struct-kind" class="input" style="width:auto; padding:3px 6px; font-size:11px;">
+                    <option value="predicted">Chai-1 3D</option>
+                    <option value="scaffold">Squelette</option>
+                  </select>
+                  <select id="insp-color-mode" class="input" style="width:auto; padding:3px 6px; font-size:11px;">
+                    <option value="plddt">pLDDT</option>
+                    <option value="spectrum">Spectre</option>
+                    <option value="chain">Chaîne</option>
+                  </select>
+                  <button id="btn-insp-surface" class="btn btn-sm" type="button">Surface</button>
+                </div>
+              </div>
+              <div class="mol-stage-wrap">
+                <div id="insp-mol-canvas" class="mol-canvas"></div>
+                <div id="insp-mol-empty" class="viewport-empty">
+                  <span>Cliquez sur une ligne du tableau pour inspecter sa structure 3D.</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Détails Biophysiques + Séquence + Optimisation ADN -->
+            <div class="inspector-details">
+              <div id="insp-rejection-banner" style="display:none; margin-bottom:10px; padding:7px 10px; border:1px solid rgba(239,68,68,0.35); background:var(--crimson-dim); color:#fca5a5; border-radius:4px; font-size:11.5px;"></div>
+
+              <div class="metrics-grid" id="insp-metrics-grid"></div>
+
+              <div class="section-header" style="margin-bottom:6px;">
+                <h3 class="section-title">Séquence Protéique Primaire</h3>
+                <button id="btn-copy-prot-seq" class="btn btn-sm" type="button">Copier AA</button>
+              </div>
+              <div id="insp-prot-seq" class="seq-box" style="margin-bottom:14px;">—</div>
+
+              <!-- Module Export ADN Synthétique (Twist / IDT) -->
+              <div class="section-block" style="margin-bottom:0;">
+                <div class="section-header">
+                  <h3 class="section-title">Préparation de Gène Synthétique (Twist / IDT)</h3>
+                  <span class="section-hint">Sans BsaI / BbsI / EcoRI</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+                  <select id="dna-host-select" class="input" style="width:auto; padding:5px 8px;">
+                    <option value="ecoli">E. coli BL21(DE3)</option>
+                    <option value="human">Homo sapiens (HEK293)</option>
+                  </select>
+                  <label class="checkbox-row">
+                    <input id="dna-his-tag" type="checkbox" checked />
+                    His6-TEV N-ter
+                  </label>
+                  <button id="btn-optimize-dna" class="btn btn-sm btn-primary" type="button">Optimiser les Codons</button>
+                  <button id="btn-download-dna" class="btn btn-sm" type="button" style="display:none;">Télécharger FASTA</button>
+                </div>
+                <div id="dna-output-meta" class="mono" style="font-size:11px; color:var(--text-secondary); margin-bottom:5px; display:none;"></div>
+                <div id="dna-output-box" class="seq-box" style="display:none;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── Modal Connexion Google Colab GPU ────────────────────────────────── -->
+  <div id="colab-modal" class="modal-backdrop">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Connexion au Runtime GPU Google Colab</h3>
+        <button id="btn-close-colab-modal" class="btn btn-sm" type="button">Fermer</button>
+      </div>
+
+      <div class="steps-guide">
+        <ol>
+          <li>Ouvrez <span class="mono">OptoBind_AI_Colab.ipynb</span> dans Google Colab (GPU T4 / L4 / A100).</li>
+          <li>Exécutez l'installation puis la cellule <strong>Étape 4A (Remote GPU Worker)</strong>.</li>
+          <li>Collez ci-dessous la <span class="mono">Public URL</span> (<span class="mono">https://xxxx.trycloudflare.com</span>).</li>
+        </ol>
+      </div>
+
+      <div class="field">
+        <label for="colab-url-input">URL du Worker Colab (HTTPS Cloudflare ou localhost)</label>
+        <input id="colab-url-input" class="input mono" type="text" placeholder="https://xxxx-xxxx.trycloudflare.com" />
+      </div>
+      <div class="field">
+        <label for="colab-token-input">Jeton d'accès (optionnel, laisser vide par défaut)</label>
+        <input id="colab-token-input" class="input mono" type="password" placeholder="Optionnel" />
+      </div>
+
+      <div id="colab-modal-telemetry" style="display:none; margin:12px 0; padding:10px 12px; border:1px solid var(--border); border-radius:4px; background:var(--bg-canvas); font-size:12px;" class="mono"></div>
+
+      <div style="display:flex; justify-content:space-between; gap:8px; margin-top:14px;">
+        <button id="btn-disconnect-colab" class="btn btn-danger" type="button">Déconnecter</button>
+        <div style="display:flex; gap:8px;">
+          <button id="btn-test-colab" class="btn btn-primary" type="button">Connecter &amp; Vérifier le GPU</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast-banner"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

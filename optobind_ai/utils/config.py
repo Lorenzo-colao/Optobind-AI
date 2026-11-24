@@ -29,7 +29,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "num_steps"           : 200,
         "noise_scale_ca"      : 1.0,
         "noise_scale_frame"   : 1.0,
-        "contigs"             : "A1-5/0 70-100",
+        "contigs"             : "auto",
         "hotspot_residues"    : [],
         "auto_hotspots"       : True,
         "num_workers"         : 2,

@@ -89,10 +89,37 @@ class ValidationResult:
     n_ramachandran_outliers  : int   = 0            # Nombre absolu d'outliers
     ramachandran_details     : str   = ""           # Détail des résidus outliers (ex: GLY28...)
     hbond_density            : float = 0.0          # Densité de liaisons H (H-bonds par 100 Å² de ΔSASA)
+    ligand_burial_pct        : float = 0.0          # % d'enfouissement du ligand dans la poche (0-100%)
+    n_metal_coord            : int   = 0            # Nombre de liaisons de coordination métal-protéine
+    metal_coord_details      : str   = ""           # Détail des liaisons métal (ex: CYS14:SG(2.25Å))
     n_liabilities            : int   = 0            # Nombre de motifs de vulnérabilité de séquence (NG, DG, DP...)
     liabilities_details      : str   = ""           # Détail des vulnérabilités de séquence
+    composite_score          : float = 0.0          # Score global multi-critères sur 100
     passed               : bool  = False
     metadata             : dict  = field(default_factory=dict)
+
+    def compute_composite_score(self) -> float:
+        """Calcule un score composite biophysique calibré sur 100 pour classer les candidats."""
+        def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
+            return max(lo, min(hi, v))
+
+        s_plddt = 25.0 * _clamp((self.plddt_mean - 50.0) / 45.0)
+        s_pocket = 15.0 * _clamp((self.plddt_pocket - 50.0) / 45.0) + 10.0 * _clamp(self.iptm if self.iptm > 0 else self.ptm)
+        m_val = self.motif_rmsd if self.motif_rmsd != float("inf") else self.rmsd
+        r_val = self.rmsd if self.rmsd != float("inf") else 5.0
+        s_rmsd = 12.0 * _clamp(1.0 - m_val / 2.5) + 8.0 * _clamp(1.0 - r_val / 3.5)
+
+        burial_ref = (self.ligand_burial_pct / 80.0) if self.ligand_burial_pct > 0 else (self.delta_sasa / 600.0)
+        s_inter = 8.0 * _clamp(self.hbond_density / 0.40) + 7.0 * _clamp(burial_ref)
+
+        s_hydro = 5.0 * _clamp(1.0 - max(0.0, self.hydrophobic_sasa_pct - 20.0) / 25.0)
+        s_rama = 5.0 * _clamp(1.0 - self.ramachandran_outliers_pct / 4.0)
+        s_coil = 5.0 * _clamp(1.0 - max(0.0, self.coil_pct - 25.0) / 35.0)
+
+        penalties = 5.0 * self.n_clashes + 10.0 * self.n_unpaired_cys + 5.0 * self.n_liabilities
+        raw = s_plddt + s_pocket + s_rmsd + s_inter + s_hydro + s_rama + s_coil - penalties
+        self.composite_score = round(_clamp(raw, 0.0, 100.0), 1)
+        return self.composite_score
 
     def validate(
         self,
@@ -131,6 +158,7 @@ class ValidationResult:
             hb_ok                              and
             liab_ok
         )
+        self.compute_composite_score()
         return self.passed
 
 

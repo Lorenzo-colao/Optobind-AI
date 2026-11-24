@@ -650,18 +650,32 @@ def analyze_interface_interactions(
         if not prot_atoms or not other_atoms:
             return default_result
 
-        # 1. Liaisons hydrogène à l'interface (Donneurs/Accepteurs N, O, S)
+        # 1. Liaisons hydrogène à l'interface (Donneurs/Accepteurs N, O, S) — cKDTree O(N log N)
         prot_polar = [a for a in prot_atoms if a.element in {"N", "O", "S"}]
         other_polar = [a for a in other_atoms if a.element in {"N", "O", "S"}]
 
-        hbonds = []
-        for pa in prot_polar:
-            for oa in other_polar:
-                d = float(np.linalg.norm(pa.coord - oa.coord))
-                if d <= hbond_cutoff:
+        hbonds: list[str] = []
+        if prot_polar and other_polar:
+            try:
+                from scipy.spatial import cKDTree
+                p_coords = np.array([a.coord for a in prot_polar], dtype=np.float32)
+                o_coords = np.array([a.coord for a in other_polar], dtype=np.float32)
+                neighbors = cKDTree(p_coords).query_ball_tree(cKDTree(o_coords), r=hbond_cutoff)
+                for i_p, o_indices in enumerate(neighbors):
+                    pa = prot_polar[i_p]
                     pr = pa.parent
-                    opr = oa.parent
-                    hbonds.append(f"{pr.resname}{pr.id[1]}:{pa.name}--{opr.resname}{opr.id[1]}:{oa.name} ({d:.1f}Å)")
+                    for i_o in o_indices:
+                        oa = other_polar[i_o]
+                        opr = oa.parent
+                        d = float(np.linalg.norm(pa.coord - oa.coord))
+                        hbonds.append(f"{pr.resname}{pr.id[1]}:{pa.name}--{opr.resname}{opr.id[1]}:{oa.name} ({d:.1f}Å)")
+            except Exception:
+                for pa in prot_polar:
+                    for oa in other_polar:
+                        d = float(np.linalg.norm(pa.coord - oa.coord))
+                        if d <= hbond_cutoff:
+                            pr, opr = pa.parent, oa.parent
+                            hbonds.append(f"{pr.resname}{pr.id[1]}:{pa.name}--{opr.resname}{opr.id[1]}:{oa.name} ({d:.1f}Å)")
 
         # 2. Ponts salins à l'interface (Anion: Asp/Glu, Cation: Lys/Arg/His)
         anion_p = [a for a in prot_atoms if (a.parent.resname == "ASP" and a.name in ["OD1", "OD2"]) or (a.parent.resname == "GLU" and a.name in ["OE1", "OE2"])]
@@ -670,7 +684,7 @@ def analyze_interface_interactions(
         anion_o = [a for a in other_atoms if (a.parent.resname == "ASP" and a.name in ["OD1", "OD2"]) or (a.parent.resname == "GLU" and a.name in ["OE1", "OE2"])]
         cation_o = [a for a in other_atoms if (a.parent.resname == "LYS" and a.name == "NZ") or (a.parent.resname == "ARG" and a.name in ["NH1", "NH2", "NE"]) or (a.parent.resname == "HIS" and a.name in ["ND1", "NE2"])]
 
-        salt_bridges = []
+        salt_bridges: list[str] = []
         for ca in cation_p:
             for aa in anion_o:
                 d = float(np.linalg.norm(ca.coord - aa.coord))
@@ -1096,4 +1110,153 @@ def analyze_metal_coordination(
     except Exception as exc:
         _log.debug("[BIOPHYSICS] Erreur analyse coordination métallique : %s", exc)
         return default_res
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rétro-traduction & Optimisation de Codons ADN pour Synthèse (Twist / IDT)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_CODON_TABLES: dict[str, dict[str, list[str]]] = {
+    "ecoli": {
+        "A": ["GCG", "GCC", "GCA", "GCT"],
+        "C": ["TGC", "TGT"],
+        "D": ["GAT", "GAC"],
+        "E": ["GAA", "GAG"],
+        "F": ["TTT", "TTC"],
+        "G": ["GGC", "GGT", "GGA"],
+        "H": ["CAT", "CAC"],
+        "I": ["ATT", "ATC"],
+        "K": ["AAA", "AAG"],
+        "L": ["CTG", "TTA", "TTG", "CTC"],
+        "M": ["ATG"],
+        "N": ["AAC", "AAT"],
+        "P": ["CCG", "CCA", "CCT"],
+        "Q": ["CAG", "CAA"],
+        "R": ["CGT", "CGC"],
+        "S": ["AGC", "TCT", "TCC", "AGT"],
+        "T": ["ACC", "ACT", "ACG"],
+        "V": ["GTG", "GTT", "GTA", "GTC"],
+        "W": ["TGG"],
+        "Y": ["TAT", "TAC"],
+        "*": ["TAA"],
+    },
+    "human": {
+        "A": ["GCC", "GCT", "GCA"],
+        "C": ["TGC", "TGT"],
+        "D": ["GAC", "GAT"],
+        "E": ["GAG", "GAA"],
+        "F": ["TTC", "TTT"],
+        "G": ["GGC", "GGA", "GGG"],
+        "H": ["CAC", "CAT"],
+        "I": ["ATC", "ATT"],
+        "K": ["AAG", "AAA"],
+        "L": ["CTG", "CTC", "CTT"],
+        "M": ["ATG"],
+        "N": ["AAC", "AAT"],
+        "P": ["CCC", "CCT", "CCA"],
+        "Q": ["CAG", "CAA"],
+        "R": ["CGG", "AGA", "AGG", "CGC"],
+        "S": ["AGC", "TCC", "TCT"],
+        "T": ["ACC", "ACA", "ACT"],
+        "V": ["GTG", "GTC", "GTT"],
+        "W": ["TGG"],
+        "Y": ["TAC", "TAT"],
+        "*": ["TGA"],
+    },
+}
+
+_FORBIDDEN_RESTRICTION_SITES = {
+    "BsaI_fwd": "GGTCTC",
+    "BsaI_rev": "GAGACC",
+    "BbsI_fwd": "GAAGAC",
+    "BbsI_rev": "GTCTTC",
+    "BsmBI_fwd": "CGTCTC",
+    "BsmBI_rev": "GAGACG",
+    "EcoRI": "GAATTC",
+    "BamHI": "GGATCC",
+    "NdeI": "CATATG",
+    "XhoI": "CTCGAG",
+}
+
+
+def optimize_dna_sequence(
+    protein_seq: str,
+    host: str = "ecoli",
+    add_his_tev: bool = True,
+    add_stop: bool = True,
+) -> dict[str, Any]:
+    """
+    Rétro-traduit et optimise une séquence protéique en ADN synthétique prêt pour
+    commande de gènes (Twist Bioscience / IDT gBlocks) :
+      - Maximisation de l'indice d'adaptation des codons (CAI) pour E. coli BL21 ou Homo sapiens.
+      - Évitement des homopolymères (>= 5 bases identiques consécutives).
+      - Élimination stricte des sites de restriction Golden Gate (BsaI, BbsI, BsmBI) et standard.
+      - Ajout optionnel d'une étiquette N-terminale clivable His6-TEV.
+    """
+    clean_aa = "".join(c for c in protein_seq.upper().strip() if c in _STANDARD_AAS)
+    if not clean_aa:
+        raise ValueError("Séquence protéique vide ou invalide.")
+
+    if add_his_tev:
+        full_aa = "MGSSHHHHHHSSGENLYFQG" + (clean_aa[1:] if clean_aa.startswith("M") else clean_aa)
+    else:
+        full_aa = clean_aa if clean_aa.startswith("M") else ("M" + clean_aa)
+
+    table = _CODON_TABLES.get(host.lower(), _CODON_TABLES["ecoli"])
+    codons: list[str] = []
+
+    for idx, aa in enumerate(full_aa):
+        choices = table.get(aa, ["GCG"])
+        chosen = choices[0]
+        # Alterner légèrement pour équilibrer le %GC et éviter les répétitions locales
+        if len(choices) > 1 and idx % 4 == 3:
+            chosen = choices[1]
+
+        prefix = "".join(codons[-2:])
+        for cand in choices:
+            test_window = prefix + cand
+            has_homopoly = any(b * 5 in test_window for b in "ACGT")
+            has_site = any(site in test_window for site in _FORBIDDEN_RESTRICTION_SITES.values())
+            if not has_homopoly and not has_site:
+                chosen = cand
+                break
+        codons.append(chosen)
+
+    if add_stop:
+        codons.append(table["*"][0])
+
+    dna = "".join(codons)
+
+    # Passe globale finale de nettoyage de tout site chevauchant
+    for site_name, site_seq in _FORBIDDEN_RESTRICTION_SITES.items():
+        pos = dna.find(site_seq)
+        while pos != -1:
+            codon_idx = pos // 3
+            if codon_idx < len(full_aa):
+                aa = full_aa[codon_idx]
+                for alt in table.get(aa, []):
+                    if alt != codons[codon_idx]:
+                        codons[codon_idx] = alt
+                        break
+            dna = "".join(codons)
+            new_pos = dna.find(site_seq)
+            if new_pos == pos:
+                break
+            pos = new_pos
+
+    gc_count = dna.count("G") + dna.count("C")
+    gc_pct = round(100.0 * gc_count / len(dna), 1) if dna else 0.0
+    remaining_sites = [k for k, v in _FORBIDDEN_RESTRICTION_SITES.items() if v in dna]
+
+    return {
+        "host": host.lower(),
+        "protein_length_aa": len(full_aa),
+        "dna_length_bp": len(dna),
+        "gc_percent": gc_pct,
+        "has_his6_tev": add_his_tev,
+        "restriction_sites_free": len(remaining_sites) == 0,
+        "protein_sequence": full_aa,
+        "dna_sequence": dna,
+    }
+
 

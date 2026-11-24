@@ -91,19 +91,22 @@ def run_rfdiffusion(
     logger.info("  ▸ pH cible       : %.1f", ph)
 
     # ── Préparation des paramètres ────────────────────────────────────────────
-    contigs   = _build_contigs(cfg, backbone_len)
+    contigs   = _build_contigs(cfg, backbone_len, target_pdb=target_pdb)
     hotspots  = list(cfg.get("hotspot_residues", []))
     auto_hotspots = cfg.get("auto_hotspots", True)
     num_steps = cfg.get("num_steps", 200)
     seed      = cfg.get("seed", 42)
     use_cuda  = cfg.get("use_cuda", True)
 
-    import torch
     default_workers = 2
-    if use_cuda and torch.cuda.is_available():
-        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        if vram_gb >= 30:  # A100 (40/80 Go) ou G4 (96 Go) : mise à l'échelle jusqu'à 4 workers
-            default_workers = min(4, n_variants)
+    try:
+        import torch
+        if use_cuda and torch.cuda.is_available():
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            if vram_gb >= 30:  # A100 (40/80 Go) ou G4 (96 Go) : mise à l'échelle jusqu'à 4 workers
+                default_workers = min(4, n_variants)
+    except ImportError:
+        pass
     num_workers = int(cfg.get("num_workers", default_workers))
 
     # Auto-détection des hotspots depuis contigs si binder design (/0 ou /)
@@ -156,17 +159,44 @@ def run_rfdiffusion(
 # Construction de la commande RFdiffusion
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _build_contigs(cfg: dict[str, Any], backbone_len: tuple[int, int]) -> str:
+def _build_contigs(
+    cfg: dict[str, Any],
+    backbone_len: tuple[int, int],
+    target_pdb: Path | None = None,
+) -> str:
     """
     Construit la chaîne ``contigs`` passée à RFdiffusion All-Atom.
 
-    Préserve la syntaxe native de RFdiffusion (virgules pour segments intra-chaîne,
-    slashes '/' et espaces pour ruptures de chaînes / binders).
+    En mode ``"auto"`` (ou si omis), lit d'abord ``REMARK OPTOBIND CONTIGS:`` dans
+    le PDB cible, sinon synthétise mathématiquement les contigs optimaux avec boucles
+    de liaison (linkers) à partir des distances 3D Cα-Cα réelles des résidus du motif.
     """
-    base = cfg.get("contigs", None)
-    if base:
-        return str(base).strip().strip("'\"")
     lo, hi = backbone_len
+    base = cfg.get("contigs", None)
+    if base and str(base).strip().lower() != "auto":
+        return str(base).strip().strip("'\"")
+
+    if target_pdb and Path(target_pdb).is_file():
+        try:
+            from optobind_ai.modules.pdb_builder import (
+                _group_residues,
+                _parse_clean_pdb_atoms,
+                extract_embedded_contigs,
+                synthesize_optimal_contigs,
+            )
+            embedded = extract_embedded_contigs(Path(target_pdb))
+            if embedded:
+                return embedded
+            atoms = _parse_clean_pdb_atoms(Path(target_pdb))
+            prot_res = [r for r in _group_residues(atoms) if r["is_protein"]]
+            if prot_res:
+                if len(prot_res) <= 12:
+                    auto_c, _ = synthesize_optimal_contigs(prot_res, min_length=lo, max_length=hi)
+                    return auto_c
+                return f"A1-{len(prot_res)}/0 {lo}-{hi}"
+        except Exception:
+            pass
+
     return f"A1-1,{lo}-{hi}"
 
 
@@ -572,16 +602,35 @@ def _dry_run_scaffolds(
     return scaffolds
 
 
-def _write_dummy_pdb(path: Path, n_res: int) -> None:
-    """Écrit un PDB factice (squelette Cα linéaire) pour le mode dry_run."""
-    lines = ["REMARK  OptoBind-AI DRY-RUN scaffold\n"]
+def _write_dummy_pdb(path: Path, n_res: int, bfactor: float = 92.0) -> None:
+    """Écrit un faisceau antiparallèle réaliste à 3 hélices α (N, CA, C, O) pour le mode dry_run."""
+    import math
+    lines = ["REMARK  OptoBind-AI DRY-RUN 3-Helix Bundle Scaffold\n"]
+    seg = max(1, n_res // 3)
+    serial = 1
     for i in range(1, n_res + 1):
-        # Coordonnées Cα sur un axe z fictif
-        x, y, z = 0.0, 0.0, float(i) * 3.8
-        line = (
-            f"ATOM  {i:5d}  CA  ALA A{i:4d}    "
-            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00 99.00           C  \n"
-        )
-        lines.append(line)
+        h_idx = min(2, (i - 1) // seg)
+        local_i = (i - 1) - h_idx * seg
+        # Centres des 3 hélices formant un cœur compact (~9 Å d'écart)
+        cx = [0.0, 8.5, 4.25][h_idx]
+        cy = [0.0, 0.0, 7.4][h_idx]
+        theta = local_i * math.radians(100.0)
+        z_base = local_i * 1.50 if h_idx != 1 else (seg - local_i) * 1.50
+
+        ca_x = cx + 2.30 * math.cos(theta)
+        ca_y = cy + 2.30 * math.sin(theta)
+        ca_z = z_base
+        atoms = [
+            ("N",  ca_x - 0.85, ca_y - 0.45, ca_z - 1.10, "N"),
+            ("CA", ca_x,        ca_y,        ca_z,        "C"),
+            ("C",  ca_x + 0.85, ca_y + 0.45, ca_z + 0.55, "C"),
+            ("O",  ca_x + 1.15, ca_y + 1.10, ca_z + 1.50, "O"),
+        ]
+        for aname, x, y, z, elem in atoms:
+            lines.append(
+                f"ATOM  {serial:5d}  {aname:<3} ALA A{i:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00{bfactor:6.2f}           {elem:>2}\n"
+            )
+            serial += 1
     lines.append("END\n")
     path.write_text("".join(lines), encoding="utf-8")

@@ -314,3 +314,81 @@ class TestReporting:
             rows = list(csv.DictReader(fh))
         assert len(rows) == 1
         assert rows[0]["passed"] == "N/A"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tests — Constructeur Automatisé PDB, Contigs 3D & Optimisation ADN
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestPdbBuilderAndOptimizations:
+    def test_automated_pdb_builder_on_zn_site(self, tmp_path):
+        from optobind_ai.modules.pdb_builder import inspect_structure, build_target_pdb
+
+        ref_pdb = Path(__file__).parent.parent / "inputs" / "targets" / "zn2+_site.pdb"
+        ref_sdf = Path(__file__).parent.parent / "inputs" / "ligands" / "DFHBI-1T.sdf"
+
+        info = inspect_structure(ref_pdb)
+        assert len(info["metals"]) >= 1
+        assert info["metals"][0]["element"] == "ZN"
+        assert info["metals"][0]["n_coordinating"] == 4
+
+        out_pdb = tmp_path / "built_zn_target.pdb"
+        res = build_target_pdb(
+            source=ref_pdb,
+            output_pdb=out_pdb,
+            mode="metal_site",
+            metal_id="ZN",
+            reporter_ligand=ref_sdf,
+            min_length=70,
+            max_length=100,
+        )
+        assert out_pdb.is_file()
+        assert "A1," in res.recommended_contigs
+        assert "A4," in res.recommended_contigs
+        assert len(res.gap_analysis) == 3
+        content = out_pdb.read_text(encoding="utf-8")
+        assert "OPTOBIND CONTIGS:" in content
+        assert "CONECT" in content
+
+    def test_multi_segment_3d_motif_resolver(self, tmp_path):
+        from optobind_ai.modules.sequencing import motif_positions_from_contigs
+
+        tgt = tmp_path / "tgt.pdb"
+        tgt.write_text(
+            "ATOM      1  CA  CYS A   1       0.000   0.000   0.000  1.00 20.00           C\n"
+            "ATOM      2  CA  HIS A   2       8.000   0.000   0.000  1.00 20.00           C\n"
+            "END\n",
+            encoding="utf-8",
+        )
+        # Squelette de 12 résidus où CYS1 est en pos 4 et HIS2 en pos 9 (écart 4 résidus libres)
+        lines = []
+        for idx in range(1, 13):
+            if idx == 4:
+                rname, x, y, z = "CYS", 0.0, 0.0, 0.0
+            elif idx == 9:
+                rname, x, y, z = "HIS", 8.0, 0.0, 0.0
+            else:
+                rname, x, y, z = "ALA", float(idx) * 2.0, 5.0, 0.0
+            lines.append(
+                f"ATOM  {idx:5d}  CA  {rname} A{idx:4d}    {x:8.3f}{y:8.3f}{z:8.3f}  1.00 20.00           C\n"
+            )
+        lines.append("END\n")
+        scaf = tmp_path / "scaf.pdb"
+        scaf.write_text("".join(lines), encoding="utf-8")
+
+        pos = motif_positions_from_contigs(
+            "2-5,A1,3-6,A2,2-5",
+            n_residues=12,
+            scaffold_pdb=scaf,
+            target_pdb=tgt,
+        )
+        assert pos == [4, 9]
+
+    def test_codon_optimization_restriction_free(self):
+        from optobind_ai.modules.biophysics import optimize_dna_sequence
+
+        res = optimize_dna_sequence("MCHHCADEFGKLMNPQRSTVWY", host="ecoli", add_his_tev=True)
+        assert res["restriction_sites_free"] is True
+        assert res["dna_length_bp"] % 3 == 0
+        assert 35.0 <= res["gc_percent"] <= 70.0
+

@@ -40,7 +40,7 @@ from pathlib import Path
 # Sur Windows, redirection transparente vers l'environnement WSL2 Ubuntu
 # qui contient PyTorch, DGL et toutes les dépendances GPU/Linux du pipeline.
 # La redirection se fait TOUJOURS sur Windows sauf si on est déjà dans WSL2.
-if sys.platform == "win32" and "--wsl-passthrough" not in sys.argv:
+if sys.platform == "win32" and "--wsl-passthrough" not in sys.argv and not os.environ.get("OPTOBIND_NO_WSL_REDIRECT"):
     if shutil.which("wsl"):
         cur_dir = str(Path.cwd().resolve())
         drive = cur_dir[0].lower()
@@ -52,12 +52,18 @@ if sys.platform == "win32" and "--wsl-passthrough" not in sys.argv:
             capture_output=True, text=True,
         )
         if "ok" in check_env.stdout:
-            # Créer un lien symbolique sans espace dans /tmp sous WSL2
             subprocess.run([
                 "wsl", "-d", "Ubuntu", "-e", "bash", "-c",
                 f"ln -sfn '{wsl_dir}' /tmp/optobind_project"
             ], check=False)
-            safe_args = [a.replace("\\", "/") for a in sys.argv[1:]]
+
+            def _win_to_wsl_arg(arg: str) -> str:
+                s = arg.replace("\\", "/")
+                if len(s) >= 3 and s[1] == ":" and s[2] == "/":
+                    return f"/mnt/{s[0].lower()}{s[2:]}"
+                return s
+
+            safe_args = [_win_to_wsl_arg(a) for a in sys.argv[1:]]
             cli_args = " ".join(f'"{a}"' for a in safe_args)
             print("[OptoBind-AI] Redirection vers WSL2 Ubuntu (env: optobind-ai)...")
             cmd = [
@@ -217,8 +223,10 @@ def main() -> int:
         logger.error("[ERROR] Aucun squelette généré. Arrêt du pipeline.")
         return 1
 
+    resolved_contigs = _build_contigs(cfg.get("rfdiffusion", {}), backbone_len, target_pdb=target_path)
+
     # ══════════════════════════════════════════════════════════════════════════
-    # MODULE 2 — Design des séquences (ProteinMPNN)
+    # MODULE 2 — Design des séquences (ProteinMPNN / LigandMPNN)
     # ══════════════════════════════════════════════════════════════════════════
     logger.info("")
     logger.info("┌─ MODULE 2 : Séquençage (ProteinMPNN / LigandMPNN) ──────────")
@@ -229,7 +237,7 @@ def main() -> int:
         ph          = ph_target,
         dry_run     = args.dry_run,
         cfg         = {**cfg.get("proteinmpnn", {}),
-                       "contigs": _build_contigs(cfg.get("rfdiffusion", {}), backbone_len),
+                       "contigs": resolved_contigs,
                        "target_pdb": target_path,
                        "ligand_file": ligand_path},
         logger      = logger,
@@ -241,7 +249,11 @@ def main() -> int:
     # ══════════════════════════════════════════════════════════════════════════
     validation_results = []
     if not args.skip_validation:
-        val_cfg = cfg.get("alphafold", {})
+        val_cfg = {
+            **cfg.get("validation", {}),
+            **cfg.get("alphafold", {}),
+            "contigs": resolved_contigs,
+        }
 
         # ── Smart Pre-Filter Universel CPU (0 ms) avant envoi sur GPU ────────
         logger.info("")
