@@ -110,9 +110,12 @@ def build_report(
 
     rows: list[dict] = []
 
+    from optobind_ai.modules.biophysics import _effective_nll_score
+
     for seq in sequences:
         val = val_index.get(seq.name)
         row: dict = {
+            "_rank_nll"         : _effective_nll_score(seq),
             "run_id"            : run_id,
             "variant_name"      : seq.name,
             "scaffold_index"    : seq.scaffold.index,
@@ -166,10 +169,12 @@ def build_report(
         key=lambda r: (
             r["passed"] == "True",
             float(r["composite_score"]) if r["composite_score"] not in ("N/A", "") else -1.0,
-            -float(r["mpnn_score"]),
+            -float(r.get("_rank_nll", 999.0)),
         ),
         reverse=True,
     )
+    for r in rows:
+        r.pop("_rank_nll", None)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8-sig") as fh:

@@ -316,6 +316,10 @@
     });
     if (prevTgt && [...tgtSel.options].some((o) => o.value === prevTgt)) {
       tgtSel.value = prevTgt;
+    } else if ([...tgtSel.options].some((o) => o.value === "inputs/targets/zn2+_1a1l_auto.pdb")) {
+      tgtSel.value = "inputs/targets/zn2+_1a1l_auto.pdb";
+    } else if ([...tgtSel.options].some((o) => o.value === "inputs/targets/1a1l_metal_site.pdb")) {
+      tgtSel.value = "inputs/targets/1a1l_metal_site.pdb";
     } else if ([...tgtSel.options].some((o) => o.value === "inputs/targets/zn2+_site.pdb")) {
       tgtSel.value = "inputs/targets/zn2+_site.pdb";
     }

@@ -770,7 +770,15 @@ def _invoke_ligandmpnn_batch(
             raise FileNotFoundError(f"Fichier FASTA LigandMPNN manquant pour {sc.name} ({fa_file})")
 
         seq_index = 0
+        n_designed = 0
         for header, sequence in read_fasta(fa_file):
+            is_native_header = (
+                seq_index == 0
+                and "id=" not in header
+                and "overall_confidence=" not in header
+                and "global_score=" not in header
+                and "score=" not in header
+            )
             score = _parse_global_score(header)
             fasta_out = output_dir / f"{sc.name}_seq_{seq_index:02d}.fasta"
             props = compute_physicochemical_properties(sequence)
@@ -784,12 +792,18 @@ def _invoke_ligandmpnn_batch(
                 charge_ph7=props["charge_ph7"],
                 gravy=props["gravy"],
                 mw_kda=props["mw_kda"],
-                metadata={"mpnn_header": header, "instability": props["instability"]},
+                metadata={
+                    "mpnn_header": header,
+                    "mpnn_model": "ligandmpnn",
+                    "instability": props["instability"],
+                },
             )
             fasta_out.write_text(ds.to_fasta(), encoding="utf-8")
             all_designed.append(ds)
             seq_index += 1
-            if seq_index >= num_seq:
+            if not is_native_header:
+                n_designed += 1
+            if n_designed >= num_seq:
                 break
 
     return all_designed
@@ -1011,9 +1025,17 @@ def _collect_sequences(
 
     designed: list[DesignedSequence] = []
     seq_index = 0
+    n_designed = 0
 
     for fasta_file in fasta_files:
         for header, sequence in read_fasta(fasta_file):
+            is_native_header = (
+                seq_index == 0
+                and "id=" not in header
+                and "overall_confidence=" not in header
+                and "global_score=" not in header
+                and "score=" not in header
+            )
             score = _parse_global_score(header)
             fasta_out = output_dir / f"{scaffold.name}_seq_{seq_index:02d}.fasta"
             props = compute_physicochemical_properties(sequence)
@@ -1032,9 +1054,11 @@ def _collect_sequences(
             fasta_out.write_text(ds.to_fasta(), encoding="utf-8")
             designed.append(ds)
             seq_index += 1
-            if seq_index >= num_seq:
+            if not is_native_header:
+                n_designed += 1
+            if n_designed >= num_seq:
                 break
-        if seq_index >= num_seq:
+        if n_designed >= num_seq:
             break
 
     return designed

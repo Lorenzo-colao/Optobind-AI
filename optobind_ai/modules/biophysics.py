@@ -18,6 +18,7 @@ Ce module combine :
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 import re
 from typing import Any
@@ -127,6 +128,25 @@ def analyze_sequence_liabilities(sequence: str) -> dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────────────
 # Smart Pre-Filter Universel (CPU, 0 ms) avant inférence 3D GPU
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _effective_nll_score(seq: Any) -> float:
+    """
+    Normalise le score MPNN en équivalent NLL (plus petit = meilleur) :
+      - LigandMPNN écrit ``overall_confidence = exp(-loss)`` ∈ (0, 1] (plus grand = meilleur).
+      - ProteinMPNN écrit ``global_score = loss`` (plus petit = meilleur).
+    """
+    sc = float(getattr(seq, "mpnn_score", 0.0) or 0.0)
+    meta = getattr(seq, "metadata", {}) or {}
+    header = str(meta.get("mpnn_header", ""))
+    is_ligand_conf = "overall_confidence=" in header or (
+        meta.get("mpnn_model") == "ligandmpnn" and 0.0 < sc <= 1.0
+    )
+    if is_ligand_conf:
+        if sc <= 0.0:
+            return 999.0
+        return -math.log(max(sc, 1e-6))
+    return sc
+
 
 def smart_pre_filter_sequences(
     sequences  : list[Any],
@@ -257,9 +277,10 @@ def smart_pre_filter_sequences(
                 stats["precipitation"] += 1
                 continue
 
-        # 4. Score ProteinMPNN
-        if max_mpnn is not None and mpnn_sc > max_mpnn:
-            rejected.append((seq, f"Score MPNN ({mpnn_sc:.2f}) > {max_mpnn:.2f}"))
+        # 4. Score ProteinMPNN / LigandMPNN (normalisé en NLL)
+        eff_nll = _effective_nll_score(seq)
+        if max_mpnn is not None and eff_nll > max_mpnn:
+            rejected.append((seq, f"Score MPNN ({mpnn_sc:.4f} / NLL={eff_nll:.2f}) > {max_mpnn:.2f}"))
             stats["mpnn_score"] += 1
             continue
 
@@ -274,7 +295,7 @@ def smart_pre_filter_sequences(
             by_scaffold.setdefault(scaf_id, []).append(s)
 
         for scaf_id, scaf_seqs in by_scaffold.items():
-            scaf_seqs.sort(key=lambda x: getattr(x, "mpnn_score", 999.0))
+            scaf_seqs.sort(key=_effective_nll_score)
             kept = scaf_seqs[:top_k]
             dropped = scaf_seqs[top_k:]
             final_qualified.extend(kept)

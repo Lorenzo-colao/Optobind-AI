@@ -5,8 +5,8 @@
 # Fichiers d'entrée (Target & Ligand)
 # ─────────────────────────────────────────────────────────────────────────────
 inputs:
-  target      : "inputs/targets/zn2+_site.pdb"   # Cible (ex: ion Zn²⁺ ou poche)
-  ligand      : "inputs/ligands/DFHBI-1T.sdf"    # Fluorophore (ex: DFHBI-1T)
+  target      : "inputs/targets/1a1l_metal_site.pdb"  # Cible (ex: ion Zn²⁺ + DFHBI-1T)
+  ligand      : "inputs/ligands/DFHBI-1T.sdf"        # Fluorophore (ex: DFHBI-1T)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Paramètres globaux de design
@@ -75,7 +75,7 @@ alphafold:
 # ─────────────────────────────────────────────────────────────────────────────
 pre_filter:
   enabled           : true         # Activer le pré-filtrage analytique universel
-  max_liabilities   : 0            # Tolérance zéro pièges chimiques (NG, DG, DP, poly-X)
+  max_liabilities   : 1            # Tolérance max 1 motif chimique mineur (évite de filtrer 90%+ des squelettes courts)
   filter_cysteines  : true         # Règle universelle de parité/compatibilité Cys
   min_net_charge    : 0.8          # Charge nette min à pH 7.4 (|q| >= 0.8)
   avoid_neutral_pi  : true         # Évite pI neutre (7.1 - 7.7) pour éviter précipitation
@@ -96,4 +96,4 @@ validation:
   max_coil_pct            : 45.0   # % max de boucles/régions non structurées (anti-molten globule)
   max_ramachandran_outliers_pct: 2.0 # % max de résidus hors zones autorisées du diagramme de Ramachandran
   min_hbond_density       : 0.15   # Densité minimale de liaisons H (H-bonds / 100 Å² de surface enfouie ΔSASA)
-  max_liabilities         : 0      # Tolérance pièges chimiques de séquence (0 = aucun motif NG, DG, DP)
+  max_liabilities         : 1      # Tolérance pièges chimiques de séquence (1 = 1 motif mineur DG/DP toléré)

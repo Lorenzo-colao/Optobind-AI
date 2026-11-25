@@ -422,4 +422,75 @@ class TestPdbBuilderAndOptimizations:
                 parts = line.split()
                 assert len(parts) == 3  # CONECT <atom> <1 partenaire>
 
+    def test_chai_restraints_use_mapped_scaffold_motif_and_best_model_idx(self, tmp_path):
+        import numpy as np
+        import logging
+        from optobind_ai.modules.validation import (
+            _write_chai_restraints,
+            _select_best_chai_model_idx,
+            _parse_chai_tm_scores,
+        )
+
+        ref_pdb = Path("inputs/targets/zn2+_site.pdb")
+        if ref_pdb.is_file():
+            seq_07 = "APLLPYPPLRDIRYPRGPAPRCLQEGEPKCTVASPTRPFLHLTIHIESGSAKRVSAVSGGRTVSITEDDERVEGPPGEVAYRRRP"
+            out_csv = tmp_path / "restraints_sc1.csv"
+            ok = _write_chai_restraints(
+                out_csv,
+                ref_pdb,
+                motif_positions=[22, 30, 41, 45],
+                protein_seq=seq_07,
+            )
+            assert ok is True
+            txt = out_csv.read_text(encoding="utf-8")
+            assert ",A,C22," in txt
+            assert ",A,C30," in txt
+            assert ",A,H41," in txt
+            assert ",A,H45," in txt
+            assert ",A,C1," not in txt
+
+        out_dir = tmp_path / "chai_out"
+        out_dir.mkdir()
+        np.savez(out_dir / "scores.model_idx_0.npz", aggregate_score=np.array([0.27]), ptm=np.array([0.57]), iptm=np.array([0.19]))
+        np.savez(out_dir / "scores.model_idx_1.npz", aggregate_score=np.array([0.65]), ptm=np.array([0.72]), iptm=np.array([0.62]))
+        assert _select_best_chai_model_idx(out_dir) == 1
+        ptm, iptm = _parse_chai_tm_scores(out_dir, logging.getLogger("test"))
+        assert round(ptm, 2) == 0.72 and round(iptm, 2) == 0.62
+
+    def test_ligandmpnn_preserves_last_id_and_ranks_confidence_descending(self, tmp_path):
+        from optobind_ai.utils.io_helpers import Scaffold, DesignedSequence
+        from optobind_ai.modules.sequencing import _collect_sequences
+        from optobind_ai.modules.biophysics import smart_pre_filter_sequences
+
+        sc_pdb = tmp_path / "sc.pdb"
+        sc_pdb.write_text("END\n", encoding="utf-8")
+        sc = Scaffold(index=0, pdb_path=sc_pdb, run_id="run_t", n_residues=10)
+
+        seqs_dir = tmp_path / "seqs"
+        seqs_dir.mkdir()
+        (seqs_dir / "sc.fa").write_text(
+            ">sc, T=0.1, seed=42\n"
+            "AAAAAAAAAA\n"
+            ">sc, id=1, T=0.1, seed=42, overall_confidence=0.3100, ligand_confidence=0.2500\n"
+            "MKEEEEEEEE\n"
+            ">sc, id=2, T=0.1, seed=42, overall_confidence=0.4900, ligand_confidence=0.4100\n"
+            "MKEEEEEEEK\n",
+            encoding="utf-8",
+        )
+        out_fa = tmp_path / "out_fa"
+        out_fa.mkdir()
+        collected = _collect_sequences(sc, tmp_path, num_seq=2, output_dir=out_fa)
+        assert len(collected) == 3  # seq_00 native + id=1 + id=2
+
+        for ds in collected:
+            ds.metadata["mpnn_model"] = "ligandmpnn"
+        kept, _ = smart_pre_filter_sequences(
+            collected,
+            target_pdb=sc_pdb,
+            cfg={"pre_filter": {"enabled": True, "max_liabilities": 1, "filter_cysteines": False, "min_net_charge": 0.0, "avoid_neutral_pi": False, "top_k_per_scaffold": 1, "filter_native": True}},
+        )
+        assert len(kept) == 1
+        assert kept[0].mpnn_score == pytest.approx(0.49)
+
+
 

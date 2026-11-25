@@ -60,7 +60,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "pre_filter": {
         "enabled"             : True,    # Pré-filtrage CPU ultra-rapide avant envoi GPU
-        "max_liabilities"     : 0,       # Tolérance zéro pour NG, DG, DP, poly-X
+        "max_liabilities"     : 1,       # Tolérance 1 motif mineur (NG, DG, DP)
         "filter_cysteines"    : True,    # Règle universelle de consistance des Cys
         "min_net_charge"      : 0.8,     # Charge nette min à pH 7.4 (|q| >= 0.8)
         "avoid_neutral_pi"    : True,    # Évite pI neutre (7.1 - 7.7)
@@ -78,7 +78,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_coil_pct"                  : 45.0,  # Seuil max de boucles/régions non structurées (% Coil)
         "max_ramachandran_outliers_pct" : 2.0,   # Seuil max d'angles dièdres interdits (% Ramachandran outliers)
         "min_hbond_density"             : 0.15,  # Densité min de liaisons H (H-bonds / 100 Å² de ΔSASA)
-        "max_liabilities"               : 0,     # Nombre max de pièges chimiques tolérés (NG, DG, DP...)
+        "max_liabilities"               : 1,     # Nombre max de pièges chimiques tolérés (NG, DG, DP...)
     },
 }
 

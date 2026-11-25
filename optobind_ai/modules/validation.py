@@ -307,7 +307,8 @@ def _evaluate_single_prediction(
     logger      : logging.Logger,
 ) -> ValidationResult:
     """Évalue immédiatement une structure prédite par Chai-1 dès sa sortie."""
-    cif_file = _find_prediction_file(out_dir, ["*.cif"])
+    best_idx = _select_best_chai_model_idx(out_dir)
+    cif_file = _find_prediction_file(out_dir, [f"pred.model_idx_{best_idx}.cif", "*.cif"])
     if cif_file:
         try:
             import gemmi
@@ -319,7 +320,7 @@ def _evaluate_single_prediction(
         except Exception as exc:
             logger.debug("[GEMMI] Conversion CIF vers PDB : %s", exc)
 
-    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
+    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", f"pred.model_idx_{best_idx}.cif", "*.cif"])
     if pred_pdb and pred_pdb.suffix.lower() == ".pdb":
         ensure_metal_coordination_conect(pred_pdb, target_pdb=target_pdb)
     plddt_scores = _parse_chai_plddt(out_dir, logger)
@@ -458,13 +459,36 @@ def _run_chai1_batch(
     fasta_dir.mkdir(parents=True, exist_ok=True)
     ligand_smiles = _sdf_to_smiles(ligand_file, logger)
 
-    restraints_path = fasta_dir / "restraints_metal.csv"
-    has_restraints = _write_chai_restraints(restraints_path, target_pdb)
-    if has_restraints:
-        logger.info("  🔒 Contraintes de coordination métallique Chai-1 activées (restraints_metal.csv)")
+    from optobind_ai.modules.sequencing import motif_positions_from_contigs
+    from optobind_ai.utils.config import DEFAULT_CONFIG
+
+    contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
+    restraints_by_scaffold: dict[str, Path | None] = {}
+    any_restraints = False
 
     tasks = []
     for seq in sequences:
+        sc_name = seq.scaffold.name
+        if sc_name not in restraints_by_scaffold:
+            motif_pos = motif_positions_from_contigs(
+                contigs,
+                seq.scaffold.n_residues,
+                logger,
+                scaffold_pdb=seq.scaffold.pdb_path,
+                target_pdb=target_pdb,
+            )
+            sc_restraints_path = fasta_dir / f"restraints_{sc_name}.csv"
+            ok_r = _write_chai_restraints(
+                sc_restraints_path,
+                target_pdb,
+                motif_positions=motif_pos,
+                protein_seq=seq.sequence,
+            )
+            restraints_by_scaffold[sc_name] = sc_restraints_path if ok_r else None
+            if ok_r:
+                any_restraints = True
+
+        restraint_p = restraints_by_scaffold[sc_name]
         fpath = fasta_dir / f"{seq.name}.fasta"
         _write_chai_fasta(fpath, seq.sequence, ligand_smiles)
         out_p = output_dir / seq.name
@@ -472,8 +496,11 @@ def _run_chai1_batch(
             "name": seq.name,
             "fasta": str(fpath.resolve()),
             "out": str(out_p.resolve()),
-            "constraint": str(restraints_path.resolve()) if has_restraints else None,
+            "constraint": str(restraint_p.resolve()) if restraint_p else None,
         })
+
+    if any_restraints:
+        logger.info("  🔒 Contraintes de coordination métallique Chai-1 activées par squelette")
 
     import json as _json
     tasks_file = fasta_dir / "batch_tasks.json"
@@ -564,8 +591,7 @@ for i, t in enumerate(task_list, 1):
                 if hasattr(cands, "pae") and cands.pae is not None:
                     import numpy as _np
                     pae_tensor = cands.pae.detach().cpu().numpy()
-                    pae_mat = pae_tensor[0] if pae_tensor.ndim == 3 else pae_tensor
-                    _np.save(out_p / "pae.npy", pae_mat.astype(_np.float32))
+                    _np.save(out_p / "pae.npy", pae_tensor.astype(_np.float32))
             except Exception:
                 pass
             try:
@@ -701,8 +727,23 @@ def _run_chai1(
     ligand_smiles = _sdf_to_smiles(ligand_file, logger)
     _write_chai_fasta(fasta_path, seq.sequence, ligand_smiles)
 
-    restraints_path = fasta_dir / "restraints_metal.csv"
-    has_restraints = _write_chai_restraints(restraints_path, target_pdb)
+    from optobind_ai.modules.sequencing import motif_positions_from_contigs
+    from optobind_ai.utils.config import DEFAULT_CONFIG
+    contigs = cfg.get("contigs", DEFAULT_CONFIG["rfdiffusion"].get("contigs", ""))
+    motif_pos = motif_positions_from_contigs(
+        contigs,
+        seq.scaffold.n_residues,
+        logger,
+        scaffold_pdb=seq.scaffold.pdb_path,
+        target_pdb=target_pdb,
+    )
+    restraints_path = fasta_dir / f"restraints_{seq.scaffold.name}.csv"
+    has_restraints = _write_chai_restraints(
+        restraints_path,
+        target_pdb,
+        motif_positions=motif_pos,
+        protein_seq=seq.sequence,
+    )
     constraint_path_str = restraints_path.as_posix() if has_restraints else ""
 
     # Répertoire de sortie dédié et garanti vide pour Chai-1
@@ -782,8 +823,7 @@ for attempt in range(1, max_retries + 1):
             if hasattr(cands, "pae") and cands.pae is not None:
                 import numpy as _np
                 pae_tensor = cands.pae.detach().cpu().numpy()
-                pae_mat = pae_tensor[0] if pae_tensor.ndim == 3 else pae_tensor
-                _np.save(out_p / "pae.npy", pae_mat.astype(_np.float32))
+                _np.save(out_p / "pae.npy", pae_tensor.astype(_np.float32))
         except Exception:
             pass
         print("CHAI1_DONE")
@@ -826,8 +866,9 @@ for attempt in range(1, max_retries + 1):
     else:
         logger.debug("  [CHAI-1] Prédiction déjà disponible via la session batch pour %s", seq.name)
 
-    # ── Conversion du mmCIF en PDB standard via gemmi ─────────────────────────
-    cif_file = _find_prediction_file(out_dir, ["*.cif"])
+    # ── Sélection du meilleur modèle Chai-1 et conversion mmCIF → PDB ─────────
+    best_idx = _select_best_chai_model_idx(out_dir)
+    cif_file = _find_prediction_file(out_dir, [f"pred.model_idx_{best_idx}.cif", "*.cif"])
     if cif_file:
         try:
             import gemmi
@@ -839,7 +880,7 @@ for attempt in range(1, max_retries + 1):
         except Exception as exc:
             logger.debug("[GEMMI] Conversion CIF vers PDB : %s", exc)
 
-    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", "pred.model_idx_0.cif", "*.cif"])
+    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb", f"pred.model_idx_{best_idx}.cif", "*.cif"])
     if pred_pdb and pred_pdb.suffix.lower() == ".pdb":
         ensure_metal_coordination_conect(pred_pdb, target_pdb=target_pdb)
     plddt    = _parse_chai_plddt(out_dir, logger)
@@ -1403,12 +1444,43 @@ def _parse_plddt_from_pdb(pdb_path: Path | None, logger: logging.Logger) -> list
         return []
 
 
+def _select_best_chai_model_idx(out_dir: Path) -> int:
+    """
+    Sélectionne l'indice de modèle Chai-1 (`model_idx_X`) maximisant `aggregate_score`
+    (ou `0.8 * iptm + 0.2 * ptm` en repli). Retourne 0 si indisponible.
+    """
+    import re as _re
+    best_idx = 0
+    best_val = -1.0
+    for npz_path in sorted(out_dir.glob("scores.model_idx_*.npz")):
+        m = _re.search(r"model_idx_(\d+)", npz_path.name)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        try:
+            import numpy as _np
+            npz_data = _np.load(npz_path)
+            if "aggregate_score" in npz_data:
+                val = float(npz_data["aggregate_score"].flatten()[0])
+            else:
+                ptm = float(npz_data["ptm"].flatten()[0]) if "ptm" in npz_data else 0.0
+                iptm = float(npz_data["iptm"].flatten()[0]) if "iptm" in npz_data else 0.0
+                val = 0.8 * iptm + 0.2 * ptm
+            if val > best_val:
+                best_val = val
+                best_idx = idx
+        except Exception:
+            continue
+    return best_idx
+
+
 def _parse_chai_plddt(out_dir: Path, logger: logging.Logger) -> list[float]:
     """Lit les scores pLDDT depuis les fichiers JSON, NPZ ou PDB/CIF de Chai-1."""
     import json as _json
+    best_idx = _select_best_chai_model_idx(out_dir)
 
     # 1. Vérifier si scores.json existe (généré par notre runner Chai-1)
-    for fname in ["scores.json", "scores.model_idx_0.json"]:
+    for fname in [f"scores.model_idx_{best_idx}.json", "scores.json", "scores.model_idx_0.json"]:
         score_file = out_dir / fname
         if score_file.exists():
             try:
@@ -1419,8 +1491,13 @@ def _parse_chai_plddt(out_dir: Path, logger: logging.Logger) -> list[float]:
             except Exception as exc:
                 logger.warning("[CHAI pLDDT JSON] %s", exc)
 
-    # 2. Vérifier les fichiers NPZ de Chai-1 (ex: scores.model_idx_0.npz)
-    for npz_path in sorted(out_dir.glob("scores*.npz")):
+    # 2. Vérifier les fichiers NPZ de Chai-1 (priorité au meilleur model_idx)
+    npz_candidates = [out_dir / f"scores.model_idx_{best_idx}.npz"] + sorted(out_dir.glob("scores*.npz"))
+    seen_npz: set[Path] = set()
+    for npz_path in npz_candidates:
+        if not npz_path.exists() or npz_path in seen_npz:
+            continue
+        seen_npz.add(npz_path)
         try:
             import numpy as _np
             npz_data = _np.load(npz_path)
@@ -1433,15 +1510,15 @@ def _parse_chai_plddt(out_dir: Path, logger: logging.Logger) -> list[float]:
         except Exception as exc:
             logger.warning("[CHAI pLDDT NPZ] %s", exc)
 
-    # 3. Fallback : lire depuis le PDB
-    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", "*.pdb"])
+    # 3. Fallback : lire depuis le PDB (déjà converti depuis le meilleur CIF)
+    pred_pdb = _find_prediction_file(out_dir, ["pred.pdb", f"pred.model_idx_{best_idx}.pdb", "*.pdb"])
     if pred_pdb:
         vals = _parse_plddt_from_pdb(pred_pdb, logger)
         if vals:
             return vals
 
     # 4. Si seul le CIF est présent, le convertir via gemmi puis lire les B-factors
-    cif_file = _find_prediction_file(out_dir, ["*.cif"])
+    cif_file = _find_prediction_file(out_dir, [f"pred.model_idx_{best_idx}.cif", "*.cif"])
     if cif_file:
         try:
             import gemmi
@@ -1458,8 +1535,14 @@ def _parse_chai_plddt(out_dir: Path, logger: logging.Logger) -> list[float]:
 
 def _parse_chai_tm_scores(out_dir: Path, logger: logging.Logger) -> tuple[float, float]:
     """Lit les métriques pTM et ipTM générées par Chai-1 (fichiers NPZ ou JSON)."""
+    best_idx = _select_best_chai_model_idx(out_dir)
     ptm, iptm = 0.0, 0.0
-    for npz_path in sorted(out_dir.glob("scores*.npz")):
+    npz_candidates = [out_dir / f"scores.model_idx_{best_idx}.npz"] + sorted(out_dir.glob("scores*.npz"))
+    seen: set[Path] = set()
+    for npz_path in npz_candidates:
+        if not npz_path.exists() or npz_path in seen:
+            continue
+        seen.add(npz_path)
         try:
             import numpy as _np
             npz_data = _np.load(npz_path)
@@ -1491,6 +1574,7 @@ def _parse_chai_pae(
     tuple[float, float]
         (pae_global_moyen_Å, pae_inter_domaines_ou_inter_chaines_Å)
     """
+    best_idx = _select_best_chai_model_idx(out_dir)
     pae_file = out_dir / "pae.npy"
     if not pae_file.exists():
         candidates = list(out_dir.glob("pae*.npy"))
@@ -1502,7 +1586,8 @@ def _parse_chai_pae(
             import numpy as _np
             pae_mat = _np.load(pae_file)
             if pae_mat.ndim == 3:
-                pae_mat = pae_mat[0]
+                sel = best_idx if best_idx < pae_mat.shape[0] else 0
+                pae_mat = pae_mat[sel]
 
             pae_mean = round(float(pae_mat.mean()), 2)
             n_tokens = pae_mat.shape[0]
@@ -1561,35 +1646,59 @@ def _write_chai_fasta(fasta_path: Path, protein_seq: str, ligand_smiles: str) ->
     fasta_path.write_text(content, encoding="utf-8")
 
 
-def _write_chai_restraints(restraints_path: Path, target_pdb: Path) -> bool:
+def _write_chai_restraints(
+    restraints_path: Path,
+    target_pdb: Path,
+    motif_positions: list[int] | None = None,
+    protein_seq: str | None = None,
+) -> bool:
     """
     Génère un fichier de contraintes CSV pour Chai-1 afin de verrouiller
     et forcer la conservation stricte des liaisons de coordination métallique (Zn2+).
+
+    Lorsque ``motif_positions`` est fourni (ex: ``[22, 30, 41, 45]`` sur le
+    squelette généré par RFdiffusion), les indices réels de la séquence designée
+    sont utilisés au lieu des indices d'origine du ``target_pdb`` (ex: ``1..4``).
     """
     if not target_pdb or not target_pdb.exists():
         return False
 
     metal_info = analyze_metal_coordination(target_pdb)
-    if metal_info.get("metals_count", 0) == 0 or not metal_info.get("coordination_residues"):
+    coord_residues = metal_info.get("coordination_residues") or []
+    if metal_info.get("metals_count", 0) == 0 or not coord_residues:
         return False
 
     import re as _re
     rows = [
         "restraint_id,chainA,res_idxA,chainB,res_idxB,connection_type,confidence,min_distance_angstrom,max_distance_angstrom,comment"
     ]
-    aa_map = {"CYS": "C", "HIS": "H", "ASP": "D", "GLU": "E"}
+    aa_map = {"CYS": "C", "HIS": "H", "ASP": "D", "GLU": "E", "SER": "S", "THR": "T", "TYR": "Y"}
+    use_mapped = bool(motif_positions) and len(motif_positions) == len(coord_residues)
 
-    for idx, r_str in enumerate(metal_info["coordination_residues"], 1):
+    for idx, r_str in enumerate(coord_residues, 1):
         m = _re.match(r"([A-Z]{3})(\d+)", r_str)
-        if m:
-            aa_3 = m.group(1)
-            pos = m.group(2)
-            aa_1 = aa_map.get(aa_3, "C")
-            res_token = f"{aa_1}{pos}"
-            max_d = 2.6 if aa_3 == "CYS" else 2.5
-            rows.append(
-                f"restraint_zn_{idx},C,,A,{res_token},pocket,1.0,0.0,{max_d},Coordination {r_str} - Zn2+"
-            )
+        if not m:
+            continue
+        aa_3 = m.group(1)
+        aa_1_expected = aa_map.get(aa_3, "C")
+        if use_mapped:
+            pos_int = int(motif_positions[idx - 1])
+            if protein_seq and 1 <= pos_int <= len(protein_seq):
+                aa_1 = protein_seq[pos_int - 1]
+            else:
+                aa_1 = aa_1_expected
+        else:
+            pos_int = int(m.group(2))
+            if protein_seq:
+                if not (1 <= pos_int <= len(protein_seq)) or protein_seq[pos_int - 1] != aa_1_expected:
+                    continue
+            aa_1 = aa_1_expected
+
+        res_token = f"{aa_1}{pos_int}"
+        max_d = 2.6 if aa_3 == "CYS" else 2.5
+        rows.append(
+            f"restraint_zn_{idx},C,,A,{res_token},pocket,1.0,0.0,{max_d},Coordination {r_str} ({res_token}) - Zn2+"
+        )
 
     if len(rows) > 1:
         restraints_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
