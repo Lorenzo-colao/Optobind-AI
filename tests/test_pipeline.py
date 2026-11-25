@@ -343,8 +343,8 @@ class TestPdbBuilderAndOptimizations:
             max_length=100,
         )
         assert out_pdb.is_file()
-        assert "A1," in res.recommended_contigs
-        assert "A4," in res.recommended_contigs
+        assert "A1-1," in res.recommended_contigs
+        assert "A4-4," in res.recommended_contigs
         assert len(res.gap_analysis) == 3
         content = out_pdb.read_text(encoding="utf-8")
         assert "OPTOBIND CONTIGS:" in content
@@ -391,4 +391,35 @@ class TestPdbBuilderAndOptimizations:
         assert res["restriction_sites_free"] is True
         assert res["dna_length_bp"] % 3 == 0
         assert 35.0 <= res["gc_percent"] <= 70.0
+
+    def test_rfdiffusion_contig_normalization_and_sdf_conect(self, tmp_path):
+        from optobind_ai.modules.scaffolding import _normalize_contigs_for_rfdiffusion
+        from optobind_ai.modules.pdb_builder import (
+            parse_sdf_heavy_atoms,
+            _build_ligand_conect_lines,
+        )
+
+        assert (
+            _normalize_contigs_for_rfdiffusion("20-25,A1,3-7,A2,4-10,A3,36-46")
+            == "20-25,A1-1,3-7,A2-2,4-10,A3-3,36-46"
+        )
+        assert (
+            _normalize_contigs_for_rfdiffusion("10-15,A1-3,5-8,A4-4,20-30")
+            == "10-15,A1-3,5-8,A4-4,20-30"
+        )
+
+        sdf = Path("inputs/ligands/DFHBI-1T.sdf")
+        if sdf.is_file():
+            atoms = parse_sdf_heavy_atoms(sdf)
+            assert len(atoms) == 22
+            # 2D SDF rescalé : C-F / C-C autour de 1.42 Å
+            serials = [(35 + i, a) for i, a in enumerate(atoms)]
+            conect = _build_ligand_conect_lines(serials)
+            # Chaque fluor (atomes 35, 36, 37) ne doit avoir qu'une seule liaison covalente (au carbone CF3)
+            f_conects = [l for l in conect if l.startswith("CONECT   35 ") or l.startswith("CONECT   36 ") or l.startswith("CONECT   37 ")]
+            assert len(f_conects) == 3
+            for line in f_conects:
+                parts = line.split()
+                assert len(parts) == 3  # CONECT <atom> <1 partenaire>
+
 

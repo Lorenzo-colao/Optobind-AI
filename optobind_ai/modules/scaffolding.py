@@ -18,6 +18,7 @@ Ce module :
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import sys
 import textwrap
@@ -159,6 +160,15 @@ def run_rfdiffusion(
 # Construction de la commande RFdiffusion
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _normalize_contigs_for_rfdiffusion(contigs_str: str) -> str:
+    """
+    RFdiffusion `ContigMap.parse_range` appelle `subcon.split("-")[1]` sur tout
+    segment de chaîne (ex: `A1` plante avec IndexError, il faut `A1-1`).
+    """
+    s = str(contigs_str).strip().strip("'\"")
+    return re.sub(r"\b([A-Za-z])(\d+)\b(?!-)", r"\1\2-\2", s)
+
+
 def _build_contigs(
     cfg: dict[str, Any],
     backbone_len: tuple[int, int],
@@ -174,7 +184,7 @@ def _build_contigs(
     lo, hi = backbone_len
     base = cfg.get("contigs", None)
     if base and str(base).strip().lower() != "auto":
-        return str(base).strip().strip("'\"")
+        return _normalize_contigs_for_rfdiffusion(str(base))
 
     if target_pdb and Path(target_pdb).is_file():
         try:
@@ -186,13 +196,13 @@ def _build_contigs(
             )
             embedded = extract_embedded_contigs(Path(target_pdb))
             if embedded:
-                return embedded
+                return _normalize_contigs_for_rfdiffusion(embedded)
             atoms = _parse_clean_pdb_atoms(Path(target_pdb))
             prot_res = [r for r in _group_residues(atoms) if r["is_protein"]]
             if prot_res:
                 if len(prot_res) <= 12:
                     auto_c, _ = synthesize_optimal_contigs(prot_res, min_length=lo, max_length=hi)
-                    return auto_c
+                    return _normalize_contigs_for_rfdiffusion(auto_c)
                 return f"A1-{len(prot_res)}/0 {lo}-{hi}"
         except Exception:
             pass
@@ -397,8 +407,6 @@ def _invoke_rfdiffusion(
             f"contigmap.contigs=['{contigs}']",
             "inference.deterministic=True",
         ]
-        if seed is not None:
-            cmd.append(f"inference.seed={seed + start_num}")
         if safe_weights:
             cmd.append(f"inference.ckpt_path={safe_weights}")
         if lig_code:

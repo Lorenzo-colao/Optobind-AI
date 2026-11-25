@@ -607,7 +607,12 @@ def fetch_ligand_3d(
 
 
 def parse_sdf_heavy_atoms(sdf_path: Path) -> list[dict[str, Any]]:
-    """Extrait les atomes lourds (hors H) et leurs coordonnées 3D d'un fichier SDF V2000."""
+    """
+    Extrait les atomes lourds (hors H), leurs coordonnées 3D et leur graphe covalent
+    d'un fichier SDF V2000. Si les coordonnées sont en 2D normalisée (longueur de
+    liaison moyenne < 1.18 Å, ex: 1.00 Å OEChem), les coordonnées sont mises à
+    l'échelle physique (~1.42 Å/liaison) autour du centroïde.
+    """
     lines = sdf_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     counts_idx = -1
     for idx, line in enumerate(lines[:15]):
@@ -621,14 +626,19 @@ def parse_sdf_heavy_atoms(sdf_path: Path) -> list[dict[str, Any]]:
     counts_line = lines[counts_idx]
     try:
         n_atoms = int(counts_line[:3].strip())
+        n_bonds = int(counts_line[3:6].strip()) if len(counts_line) >= 6 and counts_line[3:6].strip() else 0
     except ValueError:
         parts = counts_line.split()
         n_atoms = int(parts[0]) if parts else 0
+        n_bonds = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
 
     heavy_atoms: list[dict[str, Any]] = []
     elem_counters: dict[str, int] = {}
+    sdf_to_heavy: dict[int, int] = {}
 
-    for i in range(counts_idx + 1, min(counts_idx + 1 + n_atoms, len(lines))):
+    atom_start = counts_idx + 1
+    atom_end = min(atom_start + n_atoms, len(lines))
+    for sdf_idx, i in enumerate(range(atom_start, atom_end), start=1):
         parts = lines[i].split()
         if len(parts) < 4:
             continue
@@ -639,13 +649,54 @@ def parse_sdf_heavy_atoms(sdf_path: Path) -> list[dict[str, Any]]:
         elem = "".join(c for c in parts[3].upper() if c.isalpha())
         if elem == "H":
             continue
+        heavy_idx = len(heavy_atoms)
+        sdf_to_heavy[sdf_idx] = heavy_idx
         elem_counters[elem] = elem_counters.get(elem, 0) + 1
         atom_name = f"{elem}{elem_counters[elem]}"[:4]
         heavy_atoms.append({
             "atom_name": atom_name,
             "element": elem,
             "coord": np.array([x, y, z], dtype=np.float64),
+            "bonded_heavy_indices": [],
         })
+
+    # Lecture explicite de la table de liaisons SDF V2000
+    bond_lengths: list[float] = []
+    bond_start = atom_start + n_atoms
+    bond_end = min(bond_start + n_bonds, len(lines))
+    for i in range(bond_start, bond_end):
+        line = lines[i]
+        try:
+            a1 = int(line[:3].strip())
+            a2 = int(line[3:6].strip())
+        except ValueError:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                a1, a2 = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+        if a1 in sdf_to_heavy and a2 in sdf_to_heavy and a1 != a2:
+            h1, h2 = sdf_to_heavy[a1], sdf_to_heavy[a2]
+            if h2 not in heavy_atoms[h1]["bonded_heavy_indices"]:
+                heavy_atoms[h1]["bonded_heavy_indices"].append(h2)
+            if h1 not in heavy_atoms[h2]["bonded_heavy_indices"]:
+                heavy_atoms[h2]["bonded_heavy_indices"].append(h1)
+            bond_lengths.append(float(np.linalg.norm(heavy_atoms[h1]["coord"] - heavy_atoms[h2]["coord"])))
+
+    # Si aucune table de liaisons n'a pu être lue, nettoyer le champ optionnel
+    if not any(a["bonded_heavy_indices"] for a in heavy_atoms):
+        for a in heavy_atoms:
+            a.pop("bonded_heavy_indices", None)
+    elif bond_lengths:
+        mean_bond = sum(bond_lengths) / len(bond_lengths)
+        if 0.2 < mean_bond < 1.18:
+            scale = 1.42 / mean_bond
+            coords = np.array([a["coord"] for a in heavy_atoms], dtype=np.float64)
+            center = np.mean(coords, axis=0)
+            for a in heavy_atoms:
+                a["coord"] = center + (a["coord"] - center) * scale
 
     return heavy_atoms
 
@@ -741,7 +792,7 @@ def synthesize_optimal_contigs(
     contig_parts: list[str] = [f"{n_ter_min}-{n_ter_max}"]
     for b_idx, block in enumerate(blocks):
         if len(block) == 1:
-            contig_parts.append(f"{chain_id}{block[0]}")
+            contig_parts.append(f"{chain_id}{block[0]}-{block[0]}")
         else:
             contig_parts.append(f"{chain_id}{block[0]}-{block[-1]}")
         if b_idx < len(gap_loops):
@@ -832,11 +883,14 @@ def _place_allosteric_reporter(
     placed: list[dict[str, Any]] = []
     assert best_coords is not None
     for idx, a in enumerate(reporter_atoms):
-        placed.append({
+        item = {
             "atom_name": a["atom_name"],
             "element": a["element"],
             "coord": best_coords[idx],
-        })
+        }
+        if "bonded_heavy_indices" in a:
+            item["bonded_heavy_indices"] = list(a["bonded_heavy_indices"])
+        placed.append(item)
     return placed
 
 
@@ -871,19 +925,33 @@ def _format_pdb_atom_line(
 
 
 def _build_ligand_conect_lines(lig_serials_and_atoms: list[tuple[int, dict[str, Any]]]) -> list[str]:
-    """Calcule les enregistrements CONECT covalents exacts à partir des rayons covalents."""
+    """
+    Construit les enregistrements CONECT covalents du ligand.
+    Utilise en priorité la topologie exacte issue du SDF (`bonded_heavy_indices`),
+    sinon déduit les liaisons depuis les rayons covalents.
+    """
     bonds: dict[int, list[int]] = {s: [] for s, _ in lig_serials_and_atoms}
     n = len(lig_serials_and_atoms)
-    for i in range(n):
-        s_i, a_i = lig_serials_and_atoms[i]
-        r_i = COVALENT_RADII.get(a_i["element"], 0.77)
-        for j in range(i + 1, n):
-            s_j, a_j = lig_serials_and_atoms[j]
-            r_j = COVALENT_RADII.get(a_j["element"], 0.77)
-            d = float(np.linalg.norm(a_i["coord"] - a_j["coord"]))
-            if 0.85 <= d <= (r_i + r_j + 0.38):
-                bonds[s_i].append(s_j)
-                bonds[s_j].append(s_i)
+
+    if any("bonded_heavy_indices" in a for _, a in lig_serials_and_atoms):
+        serial_by_idx = {idx: s for idx, (s, _) in enumerate(lig_serials_and_atoms)}
+        for idx, (s_i, a_i) in enumerate(lig_serials_and_atoms):
+            for nbr_idx in a_i.get("bonded_heavy_indices", []):
+                if nbr_idx in serial_by_idx and nbr_idx != idx:
+                    s_j = serial_by_idx[nbr_idx]
+                    if s_j not in bonds[s_i]:
+                        bonds[s_i].append(s_j)
+    else:
+        for i in range(n):
+            s_i, a_i = lig_serials_and_atoms[i]
+            r_i = COVALENT_RADII.get(a_i["element"], 0.77)
+            for j in range(i + 1, n):
+                s_j, a_j = lig_serials_and_atoms[j]
+                r_j = COVALENT_RADII.get(a_j["element"], 0.77)
+                d = float(np.linalg.norm(a_i["coord"] - a_j["coord"]))
+                if 0.85 <= d <= (r_i + r_j + 0.38):
+                    bonds[s_i].append(s_j)
+                    bonds[s_j].append(s_i)
 
     lines: list[str] = []
     for s_i, partners in bonds.items():
