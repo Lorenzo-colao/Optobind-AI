@@ -57,6 +57,8 @@ proteinmpnn:
   fix_motif         : true
   # Rayon de prise en compte du contexte atomique ligand/métal (Å) pour LigandMPNN
   ligand_cutoff     : 8.0
+  # Acides aminés interdits hors résidus verrouillés du motif (évite les Cys orphelines)
+  omit_aa           : "C"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module 3 — Validation structurale

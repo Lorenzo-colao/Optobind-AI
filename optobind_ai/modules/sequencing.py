@@ -215,6 +215,10 @@ def run_proteinmpnn(
         )
 
     # Optimisation Batch GPU : Chargement unique de LigandMPNN en VRAM si > 1 squelette
+    omit_aa = str(cfg.get("omit_aa", "C")).strip().upper()
+    if omit_aa:
+        logger.info("  ▸ Acides aminés omis (hors motif) : %s", omit_aa)
+
     if selected_model == "ligandmpnn" and len(scaffolds) > 1:
         try:
             batch_seqs = _invoke_ligandmpnn_batch(
@@ -230,6 +234,7 @@ def run_proteinmpnn(
                 target_pdb        = target_pdb,
                 ligand_cutoff     = ligand_cutoff,
                 pack_side_chains  = bool(cfg.get("pack_side_chains", False)),
+                omit_aa           = omit_aa,
             )
             for s in batch_seqs:
                 s.metadata["mpnn_model"] = "ligandmpnn"
@@ -276,6 +281,7 @@ def run_proteinmpnn(
                     fixed_positions = fixed_positions,
                     target_pdb      = target_pdb,
                     ligand_cutoff   = ligand_cutoff,
+                    omit_aa         = omit_aa,
                 )
             except Exception as exc:
                 logger.warning(
@@ -293,6 +299,7 @@ def run_proteinmpnn(
                     seed            = seed,
                     logger          = logger,
                     fixed_positions = fixed_positions,
+                    omit_aa         = omit_aa,
                 )
         else:
             seqs = _invoke_proteinmpnn(
@@ -306,6 +313,7 @@ def run_proteinmpnn(
                 seed            = seed,
                 logger          = logger,
                 fixed_positions = fixed_positions,
+                omit_aa         = omit_aa,
             )
 
         for s in seqs:
@@ -353,8 +361,19 @@ def motif_positions_from_contigs(
             except Exception:
                 pass
 
-    if not contigs:
-        return []
+    if not contigs or contigs.strip().lower() == "auto":
+        if target_pdb and Path(target_pdb).is_file():
+            try:
+                from optobind_ai.modules.scaffolding import _build_contigs
+                contigs = _build_contigs(
+                    {"contigs": "auto"},
+                    (max(50, n_residues - 15), max(70, n_residues + 15)),
+                    target_pdb=Path(target_pdb),
+                )
+            except Exception:
+                return []
+        else:
+            return []
 
     # Si binder inter-chaînes pur ("A1-100/0 70-100"), la chaîne générée n'a pas de motif fixe interne
     if "/0 " in contigs or "/0," in contigs:
@@ -682,6 +701,7 @@ def _invoke_ligandmpnn_batch(
     target_pdb        : Path | str | None = None,
     ligand_cutoff     : float = 8.0,
     pack_side_chains  : bool = False,
+    omit_aa           : str = "C",
 ) -> list[DesignedSequence]:
     """
     Exécute LigandMPNN en session GPU unique (``--pdb_path_multi`` + ``--fixed_residues_multi``)
@@ -743,6 +763,8 @@ def _invoke_ligandmpnn_batch(
         "--ligand_mpnn_use_atom_context", "1",
         "--ligand_mpnn_cutoff_for_score", str(ligand_cutoff),
     ]
+    if omit_aa:
+        cmd += ["--omit_AA", omit_aa]
 
     if pack_side_chains:
         sc_weights = Path("weights/ligandmpnn_sc_v_32_002_16.pt")
@@ -821,6 +843,7 @@ def _invoke_ligandmpnn(
     fixed_positions : list[int] | None = None,
     target_pdb      : Path | str | None = None,
     ligand_cutoff   : float = 8.0,
+    omit_aa         : str = "C",
 ) -> list[DesignedSequence]:
     """Exécute LigandMPNN en mode atom-context-aware et parse les séquences."""
     ligand_script = _find_or_clone_ligandmpnn(logger)
@@ -851,6 +874,8 @@ def _invoke_ligandmpnn(
         "--ligand_mpnn_use_atom_context", "1",
         "--ligand_mpnn_cutoff_for_score", str(ligand_cutoff),
     ]
+    if omit_aa:
+        cmd += ["--omit_AA", omit_aa]
 
     if fixed_positions:
         chain_id = "A"
@@ -922,6 +947,7 @@ def _invoke_proteinmpnn(
     seed           : int,
     logger         : logging.Logger,
     fixed_positions: list[int] | None = None,
+    omit_aa        : str = "C",
 ) -> list[DesignedSequence]:
     """Lance ProteinMPNN Vanilla via subprocess et parse les FASTA de sortie."""
     mpnn_script, _ = _find_or_clone_proteinmpnn(logger)
@@ -941,6 +967,9 @@ def _invoke_proteinmpnn(
         "--batch_size",          str(min(num_seq, 8)),
         "--seed",                str(seed),
     ]
+    if omit_aa:
+        omit_str = "".join(dict.fromkeys("X" + omit_aa))
+        cmd += ["--omit_AAs", omit_str]
 
     if fixed_positions:
         chain_id = "A"

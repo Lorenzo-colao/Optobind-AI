@@ -210,6 +210,20 @@ class WorkerState:
 
             try:
                 job.status = "running"
+                # Synchronisation légère du code Git avant le sous-processus orchestrator.py
+                try:
+                    pull_res = subprocess.run(
+                        ["git", "pull", "--ff-only", "origin", "main"],
+                        cwd=str(PROJECT_ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=8,
+                        check=False,
+                    )
+                    if pull_res.returncode == 0 and pull_res.stdout and "Already up to date" not in pull_res.stdout:
+                        job.append_log(f"[WORKER] Mise à jour Git appliquée :\n{pull_res.stdout.strip()}")
+                except Exception:
+                    pass
                 job.append_log(f"[WORKER] Démarrage GPU : {' '.join(cmd)}")
                 proc = subprocess.Popen(
                     cmd,

@@ -47,6 +47,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "seed"                : 42,
         "fix_motif"           : True,
         "ligand_cutoff"       : 8.0,
+        "omit_aa"             : "C",
     },
     "alphafold": {
         "backend"             : "chai-1",   # "alphafold3" | "chai-1" | "esmfold"
