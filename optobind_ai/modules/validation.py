@@ -507,6 +507,7 @@ def _run_chai1_batch(
     tasks_file.write_text(_json.dumps(tasks), encoding="utf-8")
 
     python_env_path = sys.executable
+    max_seq_len = max((len(s.sequence) for s in sequences), default=100)
     recycles = int(cfg.get("num_trunk_recycles", 1))
     samples  = int(cfg.get("num_diffn_samples", 1))
     use_esm  = bool(cfg.get("use_esm_embeddings", True))
@@ -538,12 +539,11 @@ try:
             torch.set_float32_matmul_precision("high")
         except Exception:
             pass
-    # Sur A100 (40/80 Go) ou G4 (96 Go), désactiver low_memory pour garder toutes les activations
-    # en mémoire HBM2e ultra-rapide (2000 Go/s) au lieu de streamer via le bus CPU lent !
+    # Activer low_memory=False sur GPU >= 30 Go (A100/G4) OU >= 20 Go (NVIDIA L4 22.5 Go) pour chaînes <= 350 AA
     is_high_vram = False
     if torch.cuda.is_available():
         total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        if total_vram_gb >= 30:
+        if total_vram_gb >= 30 or (total_vram_gb >= 20 and {max_seq_len} <= 350):
             is_high_vram = True
     from chai_lab.chai1 import run_inference
 except Exception as exc:
@@ -553,7 +553,7 @@ except Exception as exc:
 with open('{tasks_file.as_posix()}', 'r', encoding='utf-8') as f:
     task_list = json.load(f)
 
-vram_mode = "Direct HBM2e (haute vitesse)" if is_high_vram else "Low-Memory (optimisé 24GB)"
+vram_mode = "Direct VRAM (haute vitesse)" if is_high_vram else "Low-Memory (<20 Go)"
 print(f"CHAI1_SESSION_START: {{len(task_list)}} séquences à replier avec poids chauds en VRAM [Mode : {{vram_mode}}].", flush=True)
 
 for i, t in enumerate(task_list, 1):
@@ -620,12 +620,12 @@ sys.exit(0)
     env["MPLBACKEND"] = "Agg"
     env["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
     for cand_dir in [
-        os.environ.get("CHAI_DOWNLOADS_DIR", ""),
         "/content/chai_ssd",
+        os.environ.get("CHAI_DOWNLOADS_DIR", ""),
         "/content/drive/MyDrive/optobind_weights_cache/chai",
         str(Path.home() / ".cache" / "chai"),
     ]:
-        if cand_dir and Path(cand_dir).exists():
+        if cand_dir and Path(cand_dir).exists() and any(Path(cand_dir).iterdir()):
             env["CHAI_DOWNLOADS_DIR"] = str(cand_dir)
             break
 
@@ -787,7 +787,8 @@ try:
             pass
     is_high_vram = False
     if torch.cuda.is_available():
-        if torch.cuda.get_device_properties(0).total_memory / (1024**3) >= 30:
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        if vram_gb >= 30 or (vram_gb >= 20 and {len(seq.sequence)} <= 350):
             is_high_vram = True
     from chai_lab.chai1 import run_inference
 except Exception as exc:
@@ -843,12 +844,12 @@ for attempt in range(1, max_retries + 1):
     env["MPLBACKEND"] = "Agg"
     env["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
     for cand_dir in [
-        os.environ.get("CHAI_DOWNLOADS_DIR", ""),
         "/content/chai_ssd",
+        os.environ.get("CHAI_DOWNLOADS_DIR", ""),
         "/content/drive/MyDrive/optobind_weights_cache/chai",
         str(Path.home() / ".cache" / "chai"),
     ]:
-        if cand_dir and Path(cand_dir).exists():
+        if cand_dir and Path(cand_dir).exists() and any(Path(cand_dir).iterdir()):
             env["CHAI_DOWNLOADS_DIR"] = str(cand_dir)
             break
 

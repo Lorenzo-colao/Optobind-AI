@@ -205,7 +205,26 @@ class WorkerState:
                 env["LD_LIBRARY_PATH"] = ":".join(ld_parts)
 
             drive_chai = Path("/content/drive/MyDrive/optobind_weights_cache/chai")
-            if drive_chai.exists() and "CHAI_DOWNLOADS_DIR" not in env:
+            ssd_chai = Path("/content/chai_ssd")
+            if drive_chai.exists():
+                try:
+                    copied = 0
+                    for src in drive_chai.rglob("*"):
+                        if not src.is_file():
+                            continue
+                        rel = src.relative_to(drive_chai)
+                        dst = ssd_chai / rel
+                        if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src, dst)
+                            copied += 1
+                    if copied > 0:
+                        job.append_log(f"[WORKER] Cache Chai-1 copié sur SSD local ({copied} fichier(s) → {ssd_chai}).")
+                except Exception as exc:
+                    job.append_log(f"[WORKER WARN] Copie SSD Chai-1 partielle ({exc}).")
+            if ssd_chai.exists() and any(ssd_chai.rglob("*")):
+                env["CHAI_DOWNLOADS_DIR"] = str(ssd_chai)
+            elif drive_chai.exists() and "CHAI_DOWNLOADS_DIR" not in env:
                 env["CHAI_DOWNLOADS_DIR"] = str(drive_chai)
 
             try:
@@ -325,11 +344,26 @@ def make_handler(state: WorkerState):
                     j = state.jobs[state.active_job_id]
                     if j.status in ("starting", "running"):
                         active = j.run_id
+                git_commit = ""
+                try:
+                    g_res = subprocess.run(
+                        ["git", "rev-parse", "--short", "HEAD"],
+                        cwd=str(PROJECT_ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        check=False,
+                    )
+                    if g_res.returncode == 0:
+                        git_commit = g_res.stdout.strip()
+                except Exception:
+                    pass
                 self._send_json(200, {
                     "status": "online",
                     "service": "optobind-colab-worker",
                     "project_root": str(PROJECT_ROOT),
                     "python_bin": state.python_bin,
+                    "git_commit": git_commit,
                     "active_job_id": active,
                     "weights": weights,
                     **gpu,
