@@ -212,6 +212,13 @@ class WorkerState:
                 job.status = "running"
                 # Synchronisation légère du code Git avant le sous-processus orchestrator.py
                 try:
+                    subprocess.run(
+                        ["git", "checkout", "--", "inputs/configs/default.yaml"],
+                        cwd=str(PROJECT_ROOT),
+                        capture_output=True,
+                        timeout=5,
+                        check=False,
+                    )
                     pull_res = subprocess.run(
                         ["git", "pull", "--ff-only", "origin", "main"],
                         cwd=str(PROJECT_ROOT),
