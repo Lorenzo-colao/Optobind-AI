@@ -23,7 +23,7 @@ numpy<2.0
 openbabel-wheel
 biopython
 rdkit
-prody
+prody>=2.6.0
 setuptools<70
 ml-collections
 dm-tree
